@@ -11,6 +11,8 @@ VERSION: 1.0.0
 -c or --colored <noarg>
 Don't mix color options!
 
+## NetPBM Viewer
+[NetPBM](https://kylepaulsen.com/stuff/NetpbmViewer/)
 
 ## Example Usage
 - ./fbo -g --output=screenshot.ppm
