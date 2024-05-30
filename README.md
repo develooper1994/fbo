@@ -23,6 +23,6 @@ https://github.com/develooper1994/fbo/blob/main/Makefile
 https://github.com/develooper1994/fbo/blob/main/fbo.pro
 
 ## Example Commanline Compilation
-<path>/arm-poky-linux-gnueabi-gcc \
+(path)/arm-poky-linux-gnueabi-gcc \
 -mthumb -mfpu=neon -mfloat-abi=hard -mcpu=cortex-a9 -fstack-protector-strong -D_FORTIFY_SOURCE=2 -Wformat -Wformat-security -Werror=format-security \
---sysroot=<sysroot-path> -O2 -o fbo main.c
+--sysroot=(sysroot-path) -O2 -o fbo main.c
