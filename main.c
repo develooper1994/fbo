@@ -250,7 +250,7 @@ static inline void dumpVideoMemory(const uint8_t *video_memory, const vsi *info,
     free(row);
 }
 
-int main(int argc, const char **argv){
+int main(int argc, char **argv){
     // init
     char *fbdev_name = defaultFbDev;
     int fd, fd_ouput_file;
