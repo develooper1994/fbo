@@ -16,3 +16,8 @@ Don't mix color options!
 - ./fbo -c > screenshot.ppm
 - ./fbo --device=/dev/fb -c --output=screenshot.ppm
 - ./fbo --device=/dev/fb -g > screenshot.ppm
+
+## Example Compilation
+<path>/arm-poky-linux-gnueabi-gcc \
+-mthumb -mfpu=neon -mfloat-abi=hard -mcpu=cortex-a9 -fstack-protector-strong -D_FORTIFY_SOURCE=2 -Wformat -Wformat-security -Werror=format-security \
+--sysroot=<sysroot-path> -O2 -o fbo main.c
