@@ -234,10 +234,13 @@ static inline void dumpVideoMemoryPpm(const uint8_t *video_memory, const vsi *in
                                    FILE *fp) {
     // ppm(portable pixelmap) -> P3, P6
     const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
-    uint8_t *row = (uint8_t *)malloc(info->xres * 3);
-    if (row == NULL)
+    const uint32_t row_step = info->xres * 3;
+    const uint32_t image_size = info->yres * row_step;
+    uint8_t *buffer = (uint8_t *)malloc(image_size);
+    if (buffer == NULL)
         posixError("malloc failed");
-    assert(row != NULL);
+    assert(buffer != NULL);
+    uint8_t *buffer_start_point = buffer; // save start address to write to *fp
 
     fprintf(fp, "P6 %" PRIu32 " %" PRIu32 " 255\n", info->xres, info->yres);
     for (uint32_t y = 0; y < info->yres; y++) {
@@ -262,15 +265,17 @@ static inline void dumpVideoMemoryPpm(const uint8_t *video_memory, const vsi *in
                 }
                 break;
             }
-            row[x * 3 + 0] = getColor(pixel, &info->red, colormap->red);
-            row[x * 3 + 1] = getColor(pixel, &info->green, colormap->green);
-            row[x * 3 + 2] = getColor(pixel, &info->blue, colormap->blue);
+            buffer[x * 3 + 0] = getColor(pixel, &info->red, colormap->red);
+            buffer[x * 3 + 1] = getColor(pixel, &info->green, colormap->green);
+            buffer[x * 3 + 2] = getColor(pixel, &info->blue, colormap->blue);
         }
-        if (fwrite(row, 1, info->xres * 3, fp) != info->xres * 3)
-            posixError("write error");
+        buffer += row_step;
     }
 
-    free(row);
+    if (fwrite(buffer_start_point, 1, image_size, fp) != image_size)
+        posixError("write error");
+
+    free(buffer_start_point);
 }
 
 static void dumpVideoMemoryBmpColored(
