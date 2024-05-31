@@ -1,5 +1,5 @@
 # fbo
-This software gets what is printed to framebuffer.
+This software captures what printed to framebuffer.
 Software only supports pbm(P4), pgm(P5) and ppm(P6) image formats.
 Special thanks to https://github.com/jwilk/fbcat repo!
 VERSION: 1.0.0
@@ -15,14 +15,16 @@ Don't mix color options!
 [NetPBM](https://kylepaulsen.com/stuff/NetpbmViewer/)
 
 ## Example Usage
-- ./fbo -g --output=screenshot.ppm
+- ./fbo -g --output=screenshot.pgm
 - ./fbo -c > screenshot.ppm
 - ./fbo --device=/dev/fb -c --output=screenshot.ppm
-- ./fbo --device=/dev/fb -g > screenshot.ppm
+- ./fbo --device=/dev/fb -g > screenshot.pgm
 
 ## Example Makefiles
-https://github.com/develooper1994/fbo/blob/main/Makefile
-https://github.com/develooper1994/fbo/blob/main/fbo.pro
+- https://github.com/develooper1994/fbo/blob/main/Makefile
+    - make CC=arm-linux-gnueabi-gcc // change it as you wish
+
+- https://github.com/develooper1994/fbo/blob/main/fbo.pro
 
 ## Example Commanline Compilation
 (path)/arm-poky-linux-gnueabi-gcc \
