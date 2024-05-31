@@ -188,15 +188,18 @@ static inline void dumpVideoMemoryPbm(const uint8_t *video_memory,
 }
 
 static void dumpVideoMemoryPgm(const uint8_t *video_memory,
-                                     const vsi *info,
-                                     const struct fb_cmap *colormap,
-                                     uint32_t line_length, FILE *fp) {
+                               const vsi *info,
+                               const struct fb_cmap *colormap,
+                               uint32_t line_length, FILE *fp) {
     // pgm(portable graymap) -> P2, P5
     const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
-    uint8_t *row = (uint8_t *)malloc(info->xres);
-    if (row == NULL)
+    const uint32_t row_step = info->xres;
+    const uint32_t image_size = info->yres * row_step;
+    uint8_t *buffer = (uint8_t *)malloc(image_size);
+    if (buffer == NULL)
         posixError("malloc failed");
-    assert(row != NULL);
+    assert(buffer != NULL);
+    uint8_t *buffer_start_point = buffer;
 
     fprintf(fp, "P5 %" PRIu32 " %" PRIu32 " 255\n", info->xres, info->yres);
     for (uint32_t y = 0; y < info->yres; y++) {
@@ -220,18 +223,22 @@ static void dumpVideoMemoryPgm(const uint8_t *video_memory,
                 }
                 break;
             }
-            row[x] = getGrayscale(pixel, info, colormap);
+            buffer[x] = getGrayscale(pixel, info, colormap);
         }
-        if (fwrite(row, 1, info->xres, fp) != info->xres)
-            posixError("write error");
+        buffer += row_step;
     }
 
-    free(row);
+    if (fwrite(buffer_start_point, 1, image_size, fp) != image_size)
+        posixError("write error");
+
+    free(buffer_start_point);
 }
 
-static inline void dumpVideoMemoryPpm(const uint8_t *video_memory, const vsi *info,
-                                   const cmap *colormap, uint32_t line_length,
-                                   FILE *fp) {
+static inline void dumpVideoMemoryPpm(const uint8_t *video_memory,
+                                      const vsi *info,
+                                      const cmap *colormap,
+                                      uint32_t line_length,
+                                      FILE *fp) {
     // ppm(portable pixelmap) -> P3, P6
     const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
     const uint32_t row_step = info->xres * 3;
