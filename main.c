@@ -70,7 +70,7 @@ static BITMAPFILEHEADER bfh = {
 #endif
 
 #define VERSION_MAJOR "1"
-#define VERSION_MINOR "0.0"
+#define VERSION_MINOR "0.3"
 #define VERSION VERSION_MAJOR "." VERSION_MINOR
 #define INTRO "This software captures what printed to framebuffer. \n" \
               "Software only supports pbm(P4), pgm(P5) and ppm(P6) image formats. \n" \
@@ -164,27 +164,35 @@ static inline void dumpVideoMemoryPbm(const uint8_t *video_memory,
                                          uint32_t line_length, FILE *fp) {
     // pbm(portable bitmap) -> P1, P4
     const uint32_t bytes_per_row = (info->xres + 7) / 8;
-    uint8_t *row = (uint8_t *)malloc(bytes_per_row);
-    if (row == NULL)
-        posixError("malloc failed");
-    assert(row != NULL);
+
+    const uint32_t row_step = bytes_per_row;
+    const uint32_t image_size = info->yres * row_step;
+    uint8_t *buffer = (uint8_t *)malloc(image_size);
+    if (buffer == NULL)
+      posixError("malloc failed");
+    assert(buffer != NULL);
+
+    uint8_t *buffer_start_point = (uint8_t *)malloc(bytes_per_row);
 
     if (info->xoffset % 8)
         notSupported("xoffset not divisible by 8 in 1 bpp mode");
+
     fprintf(fp, "P4 %" PRIu32 " %" PRIu32 "\n", info->xres, info->yres);
     for (uint32_t y = 0; y < info->yres; y++) {
         const uint8_t *current =
             video_memory + (y + info->yoffset) * line_length + info->xoffset / 8;
         for (uint32_t x = 0; x < bytes_per_row; x++) {
-            row[x] = reverseBits(*current++);
+            buffer[x] = reverseBits(*current++);
             if (black_is_zero)
-                row[x] = ~row[x];
+                buffer[x] = ~buffer[x];
         }
-        if (fwrite(row, 1, bytes_per_row, fp) != bytes_per_row)
-            posixError("write error");
+        buffer += row_step;
     }
 
-    free(row);
+    if (fwrite(buffer_start_point, 1, image_size, fp) != image_size)
+        posixError("write error");
+
+    free(buffer_start_point);
 }
 
 static void dumpVideoMemoryPgm(const uint8_t *video_memory,
