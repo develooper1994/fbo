@@ -17,6 +17,41 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#if !defined(le32toh) || !defined(le16toh)
+
+#if BYTE_ORDER == LITTLE_ENDIAN
+#define le32toh(x) (x)
+#define le16toh(x) (x)
+#else
+#include <byteswap.h>
+#define le32toh(x) bswap_32(x)
+#define le16toh(x) bswap_16(x)
+#endif
+
+#endif
+
+#define VERSION_MAJOR "1"
+#define VERSION_MINOR "0.5"
+#define VERSION VERSION_MAJOR "." VERSION_MINOR
+#define INTRO "This software captures what printed to framebuffer. \n" \
+"Software only supports pbm(P4), pgm(P5) and ppm(P6) image formats. \n" \
+    "Special thanks to https://github.com/jwilk/fbcat repo!"
+#define defaultFbDev "/dev/fb"
+#define defaultOutputFile stdout
+#define Author "* Author: Mustafa Selçuk Çağlar\n"
+#define BugTrackerUrl "https://github.com/develooper1994/fbo/issues"
+
+// file types
+#define PBM "pbm"
+#define PGM "pgm"
+#define PPM "ppm"
+#define BMP "bmp"
+
+// exit codes
+#define EXIT_POSIX_ERROR 2
+#define EXIT_NOT_SUPPORTED 3
+#define EXIT_HELP 4
+
 
 typedef struct fb_fix_screeninfo fsi;
 typedef struct fb_var_screeninfo vsi;
@@ -47,8 +82,9 @@ typedef struct {
 } BITMAPINFOHEADER;
 #pragma pack(pop)
 
-// BMP file header
-static BITMAPFILEHEADER bfh = {
+// fill the blanks as you wish
+/// BMP file header
+static BITMAPFILEHEADER file_header = {
     .bfType = 0x4D42,  // 'BM'
     // .bfSize = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER) + image_size,
     .bfReserved1 = 0,
@@ -56,40 +92,17 @@ static BITMAPFILEHEADER bfh = {
     .bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER)
 };
 
-#if !defined(le32toh) || !defined(le16toh)
-
-#if BYTE_ORDER == LITTLE_ENDIAN
-#define le32toh(x) (x)
-#define le16toh(x) (x)
-#else
-#include <byteswap.h>
-#define le32toh(x) bswap_32(x)
-#define le16toh(x) bswap_16(x)
-#endif
-
-#endif
-
-#define VERSION_MAJOR "1"
-#define VERSION_MINOR "0.3"
-#define VERSION VERSION_MAJOR "." VERSION_MINOR
-#define INTRO "This software captures what printed to framebuffer. \n" \
-              "Software only supports pbm(P4), pgm(P5) and ppm(P6) image formats. \n" \
-              "Special thanks to https://github.com/jwilk/fbcat repo!"
-#define defaultFbDev "/dev/fb"
-#define defaultOutputFile stdout
-#define Author "* Author: Mustafa Selçuk Çağlar\n"
-#define BugTrackerUrl "https://github.com/develooper1994/fbo/issues"
-
-// file types
-#define PBM "pbm"
-#define PGM "pgm"
-#define PPM "ppm"
-#define BMP "bmp"
-
-// exit codes
-#define EXIT_POSIX_ERROR 2
-#define EXIT_NOT_SUPPORTED 3
-#define EXIT_HELP 4
+/// BMP info header
+static BITMAPINFOHEADER info_header = {
+.biSize = sizeof(BITMAPINFOHEADER),
+// .biWidth = width,
+// .biHeight = -height, // top-down BMP
+.biPlanes = 1,
+.biCompression = 0,
+// .biSizeImage = data_size,
+.biXPelsPerMeter = 0,
+.biYPelsPerMeter = 0,
+};
 
 
 static inline void posixError(const char *s, ...) {
@@ -293,127 +306,54 @@ static inline void dumpVideoMemoryPpm(const uint8_t *video_memory,
     free(buffer_start_point);
 }
 
-static void dumpVideoMemoryBmpColored(
-    const uint8_t *video_memory,
-    const vsi *info,
-    const cmap *colormap,
-    uint32_t line_length,
-    FILE *fp
-    ){
-
-    const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
-    uint8_t *row = (uint8_t *)malloc(info->xres);
-    if (row == NULL)
-        posixError("malloc failed");
-    assert(row != NULL);
-
-    // Calculate the size of the image data (with padding)
-    uint32_t row_size = (info->xres * 3 + 3) & (~3); // 3 byte per pixel
-    uint32_t image_size = row_size * info->yres;
-    // BMP file header
-    bfh.bfSize = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER) + image_size;
-
-    // BMP info header
-    BITMAPINFOHEADER bih;
-    bih.biSize = sizeof(BITMAPINFOHEADER);
-    bih.biWidth = info->xres;
-    bih.biHeight = -info->yres;  // Negative height to store the image top-down
-    bih.biPlanes = 1;
-    bih.biBitCount = 24;
-    bih.biCompression = 0;
-    bih.biSizeImage = image_size;
-    bih.biXPelsPerMeter = 0;
-    bih.biYPelsPerMeter = 0;
-    bih.biClrUsed = 0;
-    bih.biClrImportant = 0; // all colors are important! no shades gonna be saved
-
-    // Write headers
-    fwrite(&bfh, sizeof(BITMAPFILEHEADER), 1, fp);
-    fwrite(&bih, sizeof(BITMAPINFOHEADER), 1, fp);
-
-    for (uint32_t y = 0; y < info->yres; ++y) {
-        const uint8_t *current = video_memory + (y + info->yoffset) * line_length + info->xoffset * bytes_per_pixel;
-        for (uint32_t x = 0; x < info->xres; ++x) {
-            uint32_t pixel = 0;
-            switch (bytes_per_pixel) {
-            case 4:
-                pixel = le32toh(*((uint32_t *) current));
-                current += 4;
-                break;
-            case 2:
-                pixel = le16toh(*((uint16_t *) current));
-                current += 2;
-                break;
-            default:
-                for (uint32_t i = 0; i < bytes_per_pixel; i++) {
-                    pixel |= current[0] << (i * 8);
-                    current++;
-                }
-                break;
-            }
-            row[x * 3 + 0] = getColor(pixel, &info->red, colormap->red);
-            row[x * 3 + 1] = getColor(pixel, &info->green, colormap->green);
-            row[x * 3 + 2] = getColor(pixel, &info->blue, colormap->blue);
-        }
-        if (fwrite(row, 1, row_size, fp) != row_size) {
-            posixError("write error");
-        }
-    }
-}
-
-static void dumpVideoMemoryBmpGrayscale(
+static void write_grayscale_bmp(
   const uint8_t *video_memory,
   const vsi *info,
   const cmap *colormap,
   uint32_t line_length,
   FILE *fp
-)
-{
+) {
   const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
-  uint8_t *row = (uint8_t *)malloc(info->xres);
-  if (row == NULL)
-    posixError("malloc failed");
-  assert(row != NULL);
+  uint32_t width = info->xres;
+  uint32_t height = info->yres;
 
-  // Calculate the size of the image data (with padding)
-  uint32_t row_size = (info->xres + 3) & (~3); // 1 byte per pixel
-  uint32_t image_size = row_size * info->yres;
+  BITMAPFILEHEADER file_header;
+  BITMAPINFOHEADER info_header;
+
+  uint32_t row_step = (width + 3) & (~3);
+  uint32_t image_size = row_step * height;
+  uint8_t *buffer = (uint8_t *)malloc(image_size);
+  if (buffer == NULL)
+        posixError("malloc failed");
+  assert(buffer != NULL);
+  uint8_t *buffer_start_point = buffer;
+  // uint8_t *buffer_start_point = (uint8_t *)malloc(row_step);
+
   // BMP file header
-  bfh.bfSize = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER) + image_size;
+  file_header.bfSize = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER) + image_size;
 
   // BMP info header
-  BITMAPINFOHEADER bih;
-  bih.biSize = sizeof(BITMAPINFOHEADER);
-  bih.biWidth = info->xres;
-  bih.biHeight = -info->yres;  // Negative height to store the image top-down
-  bih.biPlanes = 1;
-  bih.biBitCount = 8;
-  bih.biCompression = 0;
-  bih.biSizeImage = image_size;
-  bih.biXPelsPerMeter = 0;
-  bih.biYPelsPerMeter = 0;
-  bih.biClrUsed = 256;
-  bih.biClrImportant = 256;
+  info_header.biSize = sizeof(BITMAPINFOHEADER);
+  info_header.biWidth = width;
+  info_header.biHeight = -height; // top-down BMP
+  info_header.biBitCount = 8;
+  info_header.biSizeImage = image_size;
+  info_header.biClrUsed = info_header.biClrImportant = 256; // only 256 color range important
 
-  // Write headers
-  fwrite(&bfh, sizeof(BITMAPFILEHEADER), 1, fp);
-  fwrite(&bih, sizeof(BITMAPINFOHEADER), 1, fp);
+  fwrite(&file_header, sizeof(file_header), 1, fp);
+  fwrite(&info_header, sizeof(info_header), 1, fp);
 
-  // Write the grayscale palette (256 shades of gray)
-  for (int32_t i = 0; i < 256; i++)
-  {
+  // Write grayscale palette
+  for (int i = 0; i < 256; i++) {
     uint8_t color[4] = {i, i, i, 0};
     fwrite(color, sizeof(color), 1, fp);
   }
 
-  for (uint32_t y = 0; y < info->yres; y++)
-  {
+  for (uint32_t y = 0; y < height; y++) {
     const uint8_t *current = video_memory + (y + info->yoffset) * line_length + info->xoffset * bytes_per_pixel;
-    for (uint32_t x = 0; x < info->xres; x++)
-    {
+    for (uint32_t x = 0; x < width; x++) {
       uint32_t pixel = 0;
-      switch (bytes_per_pixel)
-      {
+      switch (bytes_per_pixel) {
         case 4:
           pixel = le32toh(*((uint32_t *) current));
           current += 4;
@@ -423,22 +363,93 @@ static void dumpVideoMemoryBmpGrayscale(
           current += 2;
           break;
         default:
-          for (uint32_t i = 0; i < bytes_per_pixel; i++)
-          {
+          for (uint32_t i = 0; i < bytes_per_pixel; i++) {
             pixel |= current[0] << (i * 8);
             current++;
           }
           break;
       }
-      row[x] = getGrayscale(pixel, info, colormap);
+      buffer[x] = getGrayscale(pixel, info, colormap);
     }
-    if (fwrite(row, 1, row_size, fp) != row_size) {
-      posixError("write error");
-    }
+    buffer += row_step;
   }
 
-  free(row);
+  if (fwrite(buffer_start_point, 1, image_size, fp) != image_size)
+    posixError("write error");
+
+  free(buffer_start_point);
 }
+
+static void write_color_bmp(
+  const uint8_t *video_memory,
+  const vsi *info,
+  const cmap *colormap,
+  uint32_t line_length,
+  FILE *fp
+) {
+
+  const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
+  uint32_t width = info->xres;
+  uint32_t height = info->yres;
+
+  BITMAPFILEHEADER file_header;
+  BITMAPINFOHEADER info_header;
+
+  uint32_t row_step = (width * 3 + 3) & (~3); // 3 bytes per pixel (RGB)
+  uint32_t image_size = row_step * height;
+  uint8_t *buffer = (uint8_t *)malloc(image_size);
+  if (buffer == NULL)
+    posixError("malloc failed");
+  assert(buffer != NULL);
+  uint8_t *buffer_start_point = buffer;
+  //uint8_t *buffer_start_point = (uint8_t *)malloc(row_step);
+
+  // BMP header header
+  file_header.bfSize = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER) + image_size;
+
+  // BMP info header
+  info_header.biWidth = width;
+  info_header.biHeight = -height; // top-down BMP
+  info_header.biBitCount = 24;
+  info_header.biSizeImage = image_size;
+  info_header.biClrUsed = info_header.biClrImportant = 0; // all colors are important
+
+  fwrite(&file_header, sizeof(file_header), 1, fp);
+  fwrite(&info_header, sizeof(info_header), 1, fp);
+
+  for (uint32_t y = 0; y < height; y++) {
+    const uint8_t *current = video_memory + (y + info->yoffset) * line_length + info->xoffset * bytes_per_pixel;
+    for (uint32_t x = 0; x < width; x++) {
+      uint32_t pixel = 0;
+      switch (bytes_per_pixel) {
+        case 4:
+          pixel = le32toh(*((uint32_t *) current));
+          current += 4;
+          break;
+        case 2:
+          pixel = le16toh(*((uint16_t *) current));
+          current += 2;
+          break;
+        default:
+          for (unsigned int i = 0; i < bytes_per_pixel; i++) {
+            pixel |= current[0] << (i * 8);
+            current++;
+          }
+          break;
+      }
+        buffer[x * 3 + 0] = getColor(pixel, &info->red, colormap->red);
+        buffer[x * 3 + 1] = getColor(pixel, &info->green, colormap->green);
+        buffer[x * 3 + 2] = getColor(pixel, &info->blue, colormap->blue);
+    }
+    buffer += row_step;
+  }
+
+  if (fwrite(buffer_start_point, 1, image_size, fp) != image_size)
+    posixError("write error");
+
+  free(buffer_start_point);
+}
+
 
 
 int main(int argc, char **argv){
