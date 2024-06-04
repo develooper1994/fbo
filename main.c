@@ -34,12 +34,24 @@
 #define VERSION_MINOR "0.5"
 #define VERSION VERSION_MAJOR "." VERSION_MINOR
 #define INTRO "This software captures what printed to framebuffer. \n" \
-"Software only supports pbm(P4), pgm(P5) and ppm(P6) image formats. \n" \
+    "Software only supports pbm(P4), pgm(P5) and ppm(P6) image formats. \n" \
     "Special thanks to https://github.com/jwilk/fbcat repo!"
-#define defaultFbDev "/dev/fb"
-#define defaultOutputFile stdout
+#define DefaultFbDev "/dev/fb"
+#define DefaultOutputFile stdout
 #define Author "* Author: Mustafa Selçuk Çağlar\n"
 #define BugTrackerUrl "https://github.com/develooper1994/fbo/issues"
+#define HELPTEXT \
+      "\n" \
+      INTRO "\n" \
+      "VERSION: " VERSION "\n" \
+      "-h <noarg> or --help <noarg> : print help \n" \
+      "-v <noarg> or --version <noarg> : print the version \n" \
+      "-d <arg> or --device <arg> : framebuffer device. Default: " DefaultFbDev "\n" \
+      "-o <arg> or --output <arg> : output file \n" \
+      "-g or --gray <noarg> : grayscale color mode. pgm file format\n" \
+      "-c or --colored <noarg> : full color mode.  ppm file format\n" \
+      "-b or --colored <noarg> : bitmap file format otherwise file format is pgm or ppm\n>"\
+      "Don't mix color options! \n"
 
 // file types
 #define PBM "pbm"
@@ -51,7 +63,6 @@
 #define EXIT_POSIX_ERROR 2
 #define EXIT_NOT_SUPPORTED 3
 #define EXIT_HELP 4
-
 
 typedef struct fb_fix_screeninfo fsi;
 typedef struct fb_var_screeninfo vsi;
@@ -66,7 +77,6 @@ typedef struct {
   uint16_t bfReserved2;
   uint32_t bfOffBits;
 } BITMAPFILEHEADER;
-
 typedef struct {
   uint32_t biSize;
   int32_t  biWidth;
@@ -81,7 +91,6 @@ typedef struct {
   uint32_t biClrImportant;
 } BITMAPINFOHEADER;
 #pragma pack(pop)
-
 // fill the blanks as you wish
 /// BMP file header
 static BITMAPFILEHEADER file_header = {
@@ -91,7 +100,6 @@ static BITMAPFILEHEADER file_header = {
     .bfReserved2 = 0,
     .bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER)
 };
-
 /// BMP info header
 static BITMAPINFOHEADER info_header = {
 .biSize = sizeof(BITMAPINFOHEADER),
@@ -104,7 +112,7 @@ static BITMAPINFOHEADER info_header = {
 .biYPelsPerMeter = 0,
 };
 
-
+// utility functions
 static inline void posixError(const char *s, ...) {
     va_list argv;
     va_start(argv, s);
@@ -123,26 +131,13 @@ static inline void notSupported(const char *s) {
     exit(EXIT_NOT_SUPPORTED);
 }
 static inline void printHelp(){
-    printf("\n"
-           INTRO "\n"
-           "VERSION: " VERSION "\n"
-           "-h <noarg> or --help <noarg> : print help \n"
-           "-v <noarg> or --version <noarg> : print the version \n"
-           "-d <arg> or --device <arg> : framebuffer device. Default: " defaultFbDev "\n"
-           "-o <arg> or --output <arg> :  \n"
-           "-g or --gray <noarg> \n"
-           "-c or --colored <noarg> \n"
-           "Don't mix color options! \n"
-           );
+    printf(HELPTEXT);
     exit(EXIT_HELP);
 }
-
-
 static inline uint8_t getColor(uint32_t pixel, const struct fb_bitfield *bitfield,
                                uint16_t *colormap) {
     return colormap[(pixel >> bitfield->offset) & ((1 << bitfield->length) - 1)] >> 8;
 }
-
 static inline uint8_t getGrayscale(uint32_t pixel, const vsi *info,
                                    const cmap *colormap) {
     const uint8_t red = colormap->red[(pixel >> info->red.offset) & ((1 << info->red.length) - 1)] >> 8;
@@ -150,7 +145,6 @@ static inline uint8_t getGrayscale(uint32_t pixel, const vsi *info,
     const uint8_t blue = colormap->blue[(pixel >> info->blue.offset) & ((1 << info->blue.length) - 1)] >> 8;
     return (uint8_t)(0.3 * red + 0.59 * green + 0.11 * blue);
 }
-
 static inline uint8_t reverseBits(uint8_t b) {
     /* reverses the order of the bits in a byte
    * from
@@ -171,21 +165,43 @@ static inline uint8_t reverseBits(uint8_t b) {
    */
     return (b * 0x0202020202ULL & 0x010884422010ULL) % 1023;
 }
+typedef struct tagImage{
+    uint32_t height;
+    uint32_t width;
+    uint32_t bitDepth;
+    char* fileName;
+    uint32_t imageSize;
+    uint8_t *buffer;
+}Image;
+static inline uint8_t * allocateImageBuffer(const vsi *info, const uint32_t row_step){
+    const uint32_t image_size = info->yres * row_step;
+    uint8_t *buffer = (uint8_t *)malloc(image_size);
+    if (buffer == NULL)
+        posixError("malloc failed");
+    assert(buffer != NULL);
+
+    return buffer;
+}
+static inline void deallocateImageBuffer(uint8_t *buffer){
+    free(buffer);
+}
 
 static inline void dumpVideoMemoryPbm(const uint8_t *video_memory,
                                          const vsi *info, bool black_is_zero,
                                          uint32_t line_length, FILE *fp) {
     // pbm(portable bitmap) -> P1, P4
     const uint32_t bytes_per_row = (info->xres + 7) / 8;
-
     const uint32_t row_step = bytes_per_row;
     const uint32_t image_size = info->yres * row_step;
+    uint8_t *buffer = allocateImageBuffer(info, row_step);
+    /*
     uint8_t *buffer = (uint8_t *)malloc(image_size);
     if (buffer == NULL)
       posixError("malloc failed");
     assert(buffer != NULL);
+    */
 
-    uint8_t *buffer_start_point = (uint8_t *)malloc(bytes_per_row);
+    uint8_t * const buffer_start_addr = buffer;
 
     if (info->xoffset % 8)
         notSupported("xoffset not divisible by 8 in 1 bpp mode");
@@ -194,6 +210,7 @@ static inline void dumpVideoMemoryPbm(const uint8_t *video_memory,
     for (uint32_t y = 0; y < info->yres; y++) {
         const uint8_t *current =
             video_memory + (y + info->yoffset) * line_length + info->xoffset / 8;
+        // horizontal scan
         for (uint32_t x = 0; x < bytes_per_row; x++) {
             buffer[x] = reverseBits(*current++);
             if (black_is_zero)
@@ -202,13 +219,13 @@ static inline void dumpVideoMemoryPbm(const uint8_t *video_memory,
         buffer += row_step;
     }
 
-    if (fwrite(buffer_start_point, 1, image_size, fp) != image_size)
+    if (fwrite(buffer_start_addr, 1, image_size, fp) != image_size)
         posixError("write error");
 
-    free(buffer_start_point);
+    free(buffer_start_addr);
 }
 
-static void dumpVideoMemoryPgm(const uint8_t *video_memory,
+static inline void dumpVideoMemoryPgm(const uint8_t *video_memory,
                                const vsi *info,
                                const struct fb_cmap *colormap,
                                uint32_t line_length, FILE *fp) {
@@ -216,16 +233,20 @@ static void dumpVideoMemoryPgm(const uint8_t *video_memory,
     const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
     const uint32_t row_step = info->xres;
     const uint32_t image_size = info->yres * row_step;
+    uint8_t *buffer = allocateImageBuffer(info, row_step);
+    /*
     uint8_t *buffer = (uint8_t *)malloc(image_size);
     if (buffer == NULL)
         posixError("malloc failed");
     assert(buffer != NULL);
-    uint8_t *buffer_start_point = buffer;
+    */
+    uint8_t * const buffer_start_addr = buffer;
 
     fprintf(fp, "P5 %" PRIu32 " %" PRIu32 " 255\n", info->xres, info->yres);
     for (uint32_t y = 0; y < info->yres; y++) {
         const uint8_t *current = video_memory + (y + info->yoffset) * line_length +
                   info->xoffset * bytes_per_pixel;
+        // horizontal scan
         for (uint32_t x = 0; x < info->xres; x++) {
             uint32_t pixel = 0;
             switch (bytes_per_pixel) {
@@ -249,10 +270,10 @@ static void dumpVideoMemoryPgm(const uint8_t *video_memory,
         buffer += row_step;
     }
 
-    if (fwrite(buffer_start_point, 1, image_size, fp) != image_size)
+    if (fwrite(buffer_start_addr, image_size, 1, fp) != 1)
         posixError("write error");
 
-    free(buffer_start_point);
+    free(buffer_start_addr);
 }
 
 static inline void dumpVideoMemoryPpm(const uint8_t *video_memory,
@@ -264,16 +285,20 @@ static inline void dumpVideoMemoryPpm(const uint8_t *video_memory,
     const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
     const uint32_t row_step = info->xres * 3;
     const uint32_t image_size = info->yres * row_step;
+    uint8_t *buffer = allocateImageBuffer(info, row_step);
+    /*
     uint8_t *buffer = (uint8_t *)malloc(image_size);
     if (buffer == NULL)
         posixError("malloc failed");
     assert(buffer != NULL);
-    uint8_t *buffer_start_point = buffer; // save start address to write to *fp
+    */
+    uint8_t * const buffer_start_addr = buffer; // save start address to write to *fp
 
     fprintf(fp, "P6 %" PRIu32 " %" PRIu32 " 255\n", info->xres, info->yres);
     for (uint32_t y = 0; y < info->yres; y++) {
         const uint8_t *current = video_memory + (y + info->yoffset) * line_length +
                   info->xoffset * bytes_per_pixel;
+        // horizontal scan
         for (uint32_t x = 0; x < info->xres; x++) {
             uint32_t pixel = 0;
             switch (bytes_per_pixel) {
@@ -300,13 +325,13 @@ static inline void dumpVideoMemoryPpm(const uint8_t *video_memory,
         buffer += row_step;
     }
 
-    if (fwrite(buffer_start_point, 1, image_size, fp) != image_size)
+    if (fwrite(buffer_start_addr, image_size, 1, fp) != 1)
         posixError("write error");
 
-    free(buffer_start_point);
+    free(buffer_start_addr);
 }
 
-static void write_grayscale_bmp(
+static void dumpVideoMemoryBmpGrayscale(
   const uint8_t *video_memory,
   const vsi *info,
   const cmap *colormap,
@@ -314,19 +339,14 @@ static void write_grayscale_bmp(
   FILE *fp
 ) {
   const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
-  uint32_t width = info->xres;
-  uint32_t height = info->yres;
 
-  BITMAPFILEHEADER file_header;
-  BITMAPINFOHEADER info_header;
-
-  uint32_t row_step = (width + 3) & (~3);
-  uint32_t image_size = row_step * height;
-  uint8_t *buffer = (uint8_t *)malloc(image_size);
+  const uint32_t row_step = (info->xres + 3) & (~3);
+  const uint32_t image_size = row_step * info->yres;
+  uint8_t * buffer = (uint8_t *)malloc(image_size);
   if (buffer == NULL)
         posixError("malloc failed");
   assert(buffer != NULL);
-  uint8_t *buffer_start_point = buffer;
+  uint8_t * const  buffer_start_addr = buffer;
   // uint8_t *buffer_start_point = (uint8_t *)malloc(row_step);
 
   // BMP file header
@@ -334,8 +354,8 @@ static void write_grayscale_bmp(
 
   // BMP info header
   info_header.biSize = sizeof(BITMAPINFOHEADER);
-  info_header.biWidth = width;
-  info_header.biHeight = -height; // top-down BMP
+  info_header.biWidth = info->xres;
+  info_header.biHeight = -info->yres; // top-down BMP
   info_header.biBitCount = 8;
   info_header.biSizeImage = image_size;
   info_header.biClrUsed = info_header.biClrImportant = 256; // only 256 color range important
@@ -349,9 +369,11 @@ static void write_grayscale_bmp(
     fwrite(color, sizeof(color), 1, fp);
   }
 
-  for (uint32_t y = 0; y < height; y++) {
-    const uint8_t *current = video_memory + (y + info->yoffset) * line_length + info->xoffset * bytes_per_pixel;
-    for (uint32_t x = 0; x < width; x++) {
+  for (uint32_t y = 0; y < info->yres; y++) {
+    const uint8_t *current = video_memory + (y + info->yoffset) * line_length +
+                             info->xoffset * bytes_per_pixel;
+    // horizontal scan
+    for (uint32_t x = 0; x < info->xres; x++) {
       uint32_t pixel = 0;
       switch (bytes_per_pixel) {
         case 4:
@@ -374,13 +396,13 @@ static void write_grayscale_bmp(
     buffer += row_step;
   }
 
-  if (fwrite(buffer_start_point, 1, image_size, fp) != image_size)
+  if (fwrite(buffer_start_addr, 1, image_size, fp) != image_size)
     posixError("write error");
 
-  free(buffer_start_point);
+  free(buffer_start_addr);
 }
 
-static void write_color_bmp(
+static void dumpVideoMemoryBmpColored(
   const uint8_t *video_memory,
   const vsi *info,
   const cmap *colormap,
@@ -392,16 +414,13 @@ static void write_color_bmp(
   uint32_t width = info->xres;
   uint32_t height = info->yres;
 
-  BITMAPFILEHEADER file_header;
-  BITMAPINFOHEADER info_header;
-
   uint32_t row_step = (width * 3 + 3) & (~3); // 3 bytes per pixel (RGB)
   uint32_t image_size = row_step * height;
-  uint8_t *buffer = (uint8_t *)malloc(image_size);
+  uint8_t * buffer = (uint8_t *)malloc(image_size);
   if (buffer == NULL)
     posixError("malloc failed");
   assert(buffer != NULL);
-  uint8_t *buffer_start_point = buffer;
+  uint8_t *buffer_start_addr = buffer;
   //uint8_t *buffer_start_point = (uint8_t *)malloc(row_step);
 
   // BMP header header
@@ -437,26 +456,26 @@ static void write_color_bmp(
           }
           break;
       }
-        buffer[x * 3 + 0] = getColor(pixel, &info->red, colormap->red);
+        buffer[x * 3 + 0] = getColor(pixel, &info->blue, colormap->blue);
         buffer[x * 3 + 1] = getColor(pixel, &info->green, colormap->green);
-        buffer[x * 3 + 2] = getColor(pixel, &info->blue, colormap->blue);
+        buffer[x * 3 + 2] = getColor(pixel, &info->red, colormap->red);
     }
     buffer += row_step;
   }
 
-  if (fwrite(buffer_start_point, 1, image_size, fp) != image_size)
+  if (fwrite(buffer_start_addr, 1, image_size, fp) != image_size)
     posixError("write error");
 
-  free(buffer_start_point);
+  free(buffer_start_addr);
 }
 
 
 
 int main(int argc, char **argv){
     // init
-    char *fbdev_name = defaultFbDev;
+    char *fbdev_name = DefaultFbDev;
     int fd, fd_ouput_file;
-    FILE *ouput_file = defaultOutputFile;
+    FILE *ouput_file = DefaultOutputFile;
     bool mmapped_memory = false, is_mono = false, black_is_zero = false;
     fsi fix_info;
     vsi var_info;
@@ -473,7 +492,9 @@ int main(int argc, char **argv){
     /// get info from user // getopt_long
     int result_opt;
     int option_index = 0;
-    int flag_help = 0, flag_version = 0, flag_device = 0, flag_output = 0, flag_gray = 0, flag_colored = 0, flag_err = 0;
+    int flag_help = 0, flag_version = 0, flag_device = 0, flag_output = 0,
+        flag_gray = 0, flag_colored = 0, flag_bitmap = 0,
+        flag_err = 0;
     char *output_file_name;
 
     /*
@@ -484,7 +505,7 @@ int main(int argc, char **argv){
     */
 
     // Kısa ve Uzun seçenekleri tanımlama
-    static const char* short_options = "hvd:o:gc";
+    static const char* short_options = "hvd:o:gcb";
     static const struct option long_options[] = {
         {"help", no_argument, 0, 'h'},
         {"version", no_argument, 0, 'v'},
@@ -492,6 +513,7 @@ int main(int argc, char **argv){
         {"output", optional_argument, 0, 'o'},
         {"gray", no_argument, 0, 'g'},
         {"colored", no_argument, 0, 'c'},
+        {"bitmap", no_argument, 0, 'b'},
         {0, 0, 0, 0}
     };
 
@@ -518,10 +540,13 @@ int main(int argc, char **argv){
         case 'c':
             flag_colored = 1;
             break;
+        case 'b':
+            flag_bitmap = 1;
+            break;
         case '?':
             // error part
             if (optopt == 'd')
-                fprintf(stderr, "option -d or --device without argument!. Device " defaultFbDev "\n");
+                fprintf(stderr, "option -d or --device without argument!. Device " DefaultFbDev "\n");
             else if (optopt == 'o')
                 fprintf(stderr, "option -o or --output without argument!...\n");
             else if (optopt != 0)
@@ -550,7 +575,7 @@ int main(int argc, char **argv){
     if(!flag_device){
         fbdev_name = getenv("FRAMEBUFFER");
         if (fbdev_name == NULL || fbdev_name[0] == '\0')
-            fbdev_name = defaultFbDev;
+            fbdev_name = DefaultFbDev;
         fprintf(stderr,"Framebuffer device: %s\n", fbdev_name);
     }
     if ((fd = open(fbdev_name, O_RDONLY)) == -1)
@@ -565,16 +590,19 @@ int main(int argc, char **argv){
 
     // Color mode checks. Default: Colored
     if (flag_gray) {
-        fprintf(stderr,"Grayscale mode is selected\n");
+        fprintf(stderr,"Grayscale color mode is selected\n");
     } else{
         // default
         flag_colored = 1;
-        fprintf(stderr,"Colored mode is selected\n");
+        fprintf(stderr,"Full color mode is selected\n");
     }
     // Renk seçeneklerinin birleştirilmemesi kontrolü
     if ((flag_gray + flag_colored) > 1) {
-        fprintf(stderr, "Don't mix color options!\n");
+        fprintf(stderr, "Don't mix color modes!\n");
         exit(EXIT_FAILURE);
+    }
+    if(flag_bitmap){
+        fprintf(stderr,"Bitmap file mode mode is selected\n");
     }
 
     // The remains threated as mistake.
@@ -586,18 +614,22 @@ int main(int argc, char **argv){
         exit(EXIT_FAILURE);
     }
     /// other checks
-    if (ioctl(fd, FBIOGET_FSCREENINFO, &fix_info))
+    if (ioctl(fd, FBIOGET_FSCREENINFO, &fix_info)){
         posixError("FBIOGET_FSCREENINFO failed");
+    }
 
-    if (fix_info.type != FB_TYPE_PACKED_PIXELS)
+    if (fix_info.type != FB_TYPE_PACKED_PIXELS){
         notSupported("framebuffer type is not PACKED_PIXELS");
+    }
 
-    if (ioctl(fd, FBIOGET_VSCREENINFO, &var_info))
+    if (ioctl(fd, FBIOGET_VSCREENINFO, &var_info)){
         posixError("FBIOGET_VSCREENINFO failed");
+    }
 
     if (var_info.red.length > 8 || var_info.green.length > 8 ||
-        var_info.blue.length > 8)
+        var_info.blue.length > 8){
         notSupported("color depth > 8 bits per component");
+    }
 
     // initColormap
     switch (fix_info.visual) {
@@ -629,20 +661,20 @@ int main(int argc, char **argv){
         notSupported("unsupported visual");
     }
 
-    if (var_info.bits_per_pixel < 8 && !is_mono)
+    if (var_info.bits_per_pixel < 8 && !is_mono){
         notSupported("< 8 bpp");
-    if (var_info.bits_per_pixel != 1 && is_mono)
+    }
+    if (var_info.bits_per_pixel != 1 && is_mono){
         notSupported("monochrome framebuffer is not 1 bpp");
+    }
 
     // process
     /// try memory-map else use malloc
-    const size_t mapped_length =
-        fix_info.line_length * (var_info.yres + var_info.yoffset);
-    uint8_t *video_memory =
-        (uint8_t *)mmap(NULL, mapped_length, PROT_READ, MAP_SHARED, fd, 0);
-    if (video_memory != MAP_FAILED)
+    const size_t mapped_length = fix_info.line_length * (var_info.yres + var_info.yoffset);
+    uint8_t *video_memory = (uint8_t *)mmap(NULL, mapped_length, PROT_READ, MAP_SHARED, fd, 0);
+    if (video_memory != MAP_FAILED){
         mmapped_memory = true;
-    else {
+    } else {
         mmapped_memory = false;
         const size_t buffer_size = fix_info.line_length * var_info.yres;
         video_memory = (uint8_t *)malloc(buffer_size);
@@ -662,29 +694,36 @@ int main(int argc, char **argv){
     }
 
     fflush(ouput_file);
-    if (is_mono)
+    if (is_mono){
         dumpVideoMemoryPbm(video_memory, &var_info, black_is_zero,
-                              fix_info.line_length, ouput_file);
-    else if(flag_colored)
+                           fix_info.line_length, ouput_file);
+    } else if(flag_bitmap){
+        if(flag_colored){
+            dumpVideoMemoryBmpColored(video_memory, &var_info, &colormap, fix_info.line_length, ouput_file);
+        } else if(flag_gray){
+            dumpVideoMemoryBmpGrayscale(video_memory, &var_info, &colormap, fix_info.line_length, ouput_file);
+        }
+    } else if(flag_colored){
         dumpVideoMemoryPpm(video_memory, &var_info, &colormap, fix_info.line_length, ouput_file);
-    else if(flag_gray)
-        dumpVideoMemoryPgm(video_memory, &var_info, &colormap,
-                             fix_info.line_length, ouput_file);
+    } else if(flag_gray){
+        dumpVideoMemoryPgm(video_memory, &var_info, &colormap, fix_info.line_length, ouput_file);
+    }
 
 
     // close and free
-    if (fclose(stdout))
+    if (fclose(stdout)){
         posixError("write error");
+    }
 
     // deliberately ignore errors
-    if (mmapped_memory)
+    if (mmapped_memory){
         munmap(video_memory, mapped_length);
-    else
+    } else{
         free(video_memory);
+    }
     close(fd);
     close(fd_ouput_file);
     fclose(ouput_file);
 
     return 0;
 }
-
