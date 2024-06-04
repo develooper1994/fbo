@@ -35,7 +35,7 @@
 #endif
 
 #define VERSION_MAJOR "1"
-#define VERSION_MINOR "0.5"
+#define VERSION_MINOR "0.6"
 #define VERSION VERSION_MAJOR "." VERSION_MINOR
 #define INTRO "This software captures what printed to framebuffer. \n" \
     "Software only supports pbm(P4), pgm(P5) and ppm(P6) image formats. \n" \
@@ -48,10 +48,10 @@
       "\n" \
       INTRO "\n" \
       "VERSION: " VERSION "\n" \
-      "-h <noarg> or --help <noarg> : print help \n" \
-      "-v <noarg> or --version <noarg> : print the version \n" \
-      "-d <arg> or --device <arg> : framebuffer device. Default: " DefaultFbDev "\n" \
-      "-o <arg> or --output <arg> : output file \n" \
+      "-h or --help <noarg> : print help \n" \
+      "-v or --version <noarg> : print the version \n" \
+      "-d or --device <arg> : framebuffer device. Default: " DefaultFbDev "\n" \
+      "-o or --output <arg> : output file \n" \
       "-g or --gray <noarg> : grayscale color mode. P5, pgm file format\n" \
       "-c or --colored <noarg> : full color mode. P6, ppm file format\n" \
       "-b or --colored <noarg> : bitmap file format otherwise file format is pgm or ppm\n>"\

@@ -2,13 +2,15 @@
 This software captures what printed to framebuffer.
 Software only supports pbm(P4), pgm(P5) and ppm(P6) image formats.
 Special thanks to https://github.com/jwilk/fbcat repo!
-VERSION: 1.0.0
--h <noarg> or --help <noarg> : print help
--v <noarg> or --version <noarg> : print the version
--d <arg> or --device <arg> : framebuffer device. Default: /dev/fb
--o <arg> or --output <arg> :
+VERSION: 1.0.6
+-h or --help <noarg> : print help
+-v or --version <noarg> : print the version
+-d or --device <arg> : framebuffer device. Default: /dev/fb
+-o or --output <arg> :
 -g or --gray <noarg>
 -c or --colored <noarg>
+-b or --colored <noarg> : bitmap file format otherwise file format is pgm or ppm
+-t or --thread <noarg> : Use all cores of the processor. It may affect on multicore systems on bigger screens. (only PPM for now)
 Don't mix color options!
 
 ## NetPBM Viewer
@@ -29,4 +31,4 @@ Don't mix color options!
 ## Example Commanline Compilation
 (path)/arm-poky-linux-gnueabi-gcc \
 -mthumb -mfpu=neon -mfloat-abi=hard -mcpu=cortex-a9 -fstack-protector-strong -D_FORTIFY_SOURCE=2 -Wformat -Wformat-security -Werror=format-security \
---sysroot=(sysroot-path) -O2 -o fbo main.c
+--sysroot=(sysroot-path) -pthread -O3 -o fbo main.c
