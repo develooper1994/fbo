@@ -9,6 +9,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <endian.h>
+#include <pthread.h>
 
 #include <linux/fb.h>
 
@@ -16,6 +18,8 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+
+#include <arm_neon.h>
 
 #if !defined(le32toh) || !defined(le16toh)
 
@@ -48,9 +52,10 @@
       "-v <noarg> or --version <noarg> : print the version \n" \
       "-d <arg> or --device <arg> : framebuffer device. Default: " DefaultFbDev "\n" \
       "-o <arg> or --output <arg> : output file \n" \
-      "-g or --gray <noarg> : grayscale color mode. pgm file format\n" \
-      "-c or --colored <noarg> : full color mode.  ppm file format\n" \
+      "-g or --gray <noarg> : grayscale color mode. P5, pgm file format\n" \
+      "-c or --colored <noarg> : full color mode. P6, ppm file format\n" \
       "-b or --colored <noarg> : bitmap file format otherwise file format is pgm or ppm\n>"\
+      "-t or --thread <noarg> : Use all cores of the processor. It may affect on multicore systems on bigger screens. (only PPM for now)\n" \
       "Don't mix color options! \n"
 
 // file types
@@ -165,6 +170,20 @@ static inline uint8_t reverseBits(uint8_t b) {
    */
     return (b * 0x0202020202ULL & 0x010884422010ULL) % 1023;
 }
+typedef struct {
+    const uint8_t *video_memory;
+    const vsi *info;
+    const cmap *colormap;
+    uint32_t line_length;
+    uint8_t *buffer;
+    uint32_t start_row;
+    uint32_t num_rows;
+} ThreadData;
+typedef struct ThreadNode {
+    pthread_t thread;
+    ThreadData data;
+    struct ThreadNode *next;
+} ThreadNode;
 typedef struct tagImage{
     uint32_t height;
     uint32_t width;
@@ -182,13 +201,10 @@ static inline uint8_t * allocateImageBuffer(const vsi *info, const uint32_t row_
 
     return buffer;
 }
-static inline void deallocateImageBuffer(uint8_t *buffer){
-    free(buffer);
-}
 
 static inline void dumpVideoMemoryPbm(const uint8_t *video_memory,
-                                         const vsi *info, bool black_is_zero,
-                                         uint32_t line_length, FILE *fp) {
+                                         const vsi *info, const bool black_is_zero,
+                                         const uint32_t line_length, FILE *fp) {
     // pbm(portable bitmap) -> P1, P4
     const uint32_t bytes_per_row = (info->xres + 7) / 8;
     const uint32_t row_step = bytes_per_row;
@@ -207,11 +223,11 @@ static inline void dumpVideoMemoryPbm(const uint8_t *video_memory,
         notSupported("xoffset not divisible by 8 in 1 bpp mode");
 
     fprintf(fp, "P4 %" PRIu32 " %" PRIu32 "\n", info->xres, info->yres);
-    for (uint32_t y = 0; y < info->yres; y++) {
+    for (uint32_t y = 0; y < info->yres; ++y) {
         const uint8_t *current =
             video_memory + (y + info->yoffset) * line_length + info->xoffset / 8;
         // horizontal scan
-        for (uint32_t x = 0; x < bytes_per_row; x++) {
+        for (uint32_t x = 0; x < bytes_per_row; ++x) {
             buffer[x] = reverseBits(*current++);
             if (black_is_zero)
                 buffer[x] = ~buffer[x];
@@ -219,7 +235,7 @@ static inline void dumpVideoMemoryPbm(const uint8_t *video_memory,
         buffer += row_step;
     }
 
-    if (fwrite(buffer_start_addr, 1, image_size, fp) != image_size)
+    if (fwrite(buffer_start_addr, image_size, 1, fp) != 1)
         posixError("write error");
 
     free(buffer_start_addr);
@@ -228,7 +244,7 @@ static inline void dumpVideoMemoryPbm(const uint8_t *video_memory,
 static inline void dumpVideoMemoryPgm(const uint8_t *video_memory,
                                const vsi *info,
                                const struct fb_cmap *colormap,
-                               uint32_t line_length, FILE *fp) {
+                               const uint32_t line_length, FILE *fp) {
     // pgm(portable graymap) -> P2, P5
     const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
     const uint32_t row_step = info->xres;
@@ -243,11 +259,11 @@ static inline void dumpVideoMemoryPgm(const uint8_t *video_memory,
     uint8_t * const buffer_start_addr = buffer;
 
     fprintf(fp, "P5 %" PRIu32 " %" PRIu32 " 255\n", info->xres, info->yres);
-    for (uint32_t y = 0; y < info->yres; y++) {
+    for (uint32_t y = 0; y < info->yres; ++y) {
         const uint8_t *current = video_memory + (y + info->yoffset) * line_length +
                   info->xoffset * bytes_per_pixel;
         // horizontal scan
-        for (uint32_t x = 0; x < info->xres; x++) {
+        for (uint32_t x = 0; x < info->xres; ++x) {
             uint32_t pixel = 0;
             switch (bytes_per_pixel) {
             case 4:
@@ -259,9 +275,9 @@ static inline void dumpVideoMemoryPgm(const uint8_t *video_memory,
                 current += 2;
                 break;
             default:
-                for (uint32_t i = 0; i < bytes_per_pixel; i++) {
+                for (uint32_t i = 0; i < bytes_per_pixel; ++i) {
                     pixel |= current[0] << (i * 8);
-                    current++;
+                    ++current;
                 }
                 break;
             }
@@ -276,33 +292,17 @@ static inline void dumpVideoMemoryPgm(const uint8_t *video_memory,
     free(buffer_start_addr);
 }
 
-static inline void dumpVideoMemoryPpm(const uint8_t *video_memory,
-                                      const vsi *info,
-                                      const cmap *colormap,
-                                      uint32_t line_length,
-                                      FILE *fp) {
-    // ppm(portable pixelmap) -> P3, P6
-    const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
-    const uint32_t row_step = info->xres * 3;
-    const uint32_t image_size = info->yres * row_step;
-    uint8_t *buffer = allocateImageBuffer(info, row_step);
-    /*
-    uint8_t *buffer = (uint8_t *)malloc(image_size);
-    if (buffer == NULL)
-        posixError("malloc failed");
-    assert(buffer != NULL);
-    */
-    uint8_t * const buffer_start_addr = buffer; // save start address to write to *fp
+void* processPpmRows(void *arg) {
+    ThreadData *data = (ThreadData *)arg;
+    const uint32_t bytes_per_pixel = (data->info->bits_per_pixel + 7) / 8;
+    uint8_t *row = data->buffer + data->start_row * data->info->xres * 3;
 
-    fprintf(fp, "P6 %" PRIu32 " %" PRIu32 " 255\n", info->xres, info->yres);
-    for (uint32_t y = 0; y < info->yres; y++) {
-        const uint8_t *current = video_memory + (y + info->yoffset) * line_length +
-                  info->xoffset * bytes_per_pixel;
-        // horizontal scan
-        for (uint32_t x = 0; x < info->xres; x++) {
+    for (uint32_t y = data->start_row; y < data->start_row + data->num_rows; y++) {
+        const uint8_t *current = data->video_memory + (y + data->info->yoffset) * data->line_length +
+                                 data->info->xoffset * bytes_per_pixel;
+        for (uint32_t x = 0; x < data->info->xres; x++) {
             uint32_t pixel = 0;
             switch (bytes_per_pixel) {
-            // The following code assumes little-endian byte ordering in the framebuffer.
             case 4:
                 pixel = le32toh(*((uint32_t *)current));
                 current += 4;
@@ -318,24 +318,102 @@ static inline void dumpVideoMemoryPpm(const uint8_t *video_memory,
                 }
                 break;
             }
-            buffer[x * 3 + 0] = getColor(pixel, &info->red, colormap->red);
-            buffer[x * 3 + 1] = getColor(pixel, &info->green, colormap->green);
-            buffer[x * 3 + 2] = getColor(pixel, &info->blue, colormap->blue);
+            row[x * 3 + 0] = getColor(pixel, &data->info->red, data->colormap->red);
+            row[x * 3 + 1] = getColor(pixel, &data->info->green, data->colormap->green);
+            row[x * 3 + 2] = getColor(pixel, &data->info->blue, data->colormap->blue);
         }
-        buffer += row_step;
+        row += data->info->xres * 3;
     }
-
-    if (fwrite(buffer_start_addr, image_size, 1, fp) != 1)
-        posixError("write error");
-
-    free(buffer_start_addr);
+    return NULL;
 }
 
-static void dumpVideoMemoryBmpGrayscale(
+static inline void dumpVideoMemoryPpm(const uint8_t *video_memory, const vsi *info,
+                                      const cmap *colormap, uint32_t line_length,
+                                      FILE *fp, int use_multithreading) {
+    const uint32_t image_size = info->xres * info->yres * 3;
+    uint8_t *buffer = (uint8_t *)malloc(image_size);
+    if (buffer == NULL) {
+        posixError("malloc failed");
+        return;
+    }
+
+    fprintf(fp, "P6 %" PRIu32 " %" PRIu32 " 255\n", info->xres, info->yres);
+
+    // Prepare thread data for the entire image
+    ThreadData data = {
+        .video_memory = video_memory,
+        .info = info,
+        .colormap = colormap,
+        .line_length = line_length,
+        .buffer = buffer,
+        .start_row = 0,
+        .num_rows = info->yres
+    };
+
+    if (use_multithreading) {
+        // Get the number of available processors at runtime
+        int num_threads = sysconf(_SC_NPROCESSORS_ONLN);
+        if (num_threads <= 0) {
+            num_threads = 1; // Fallback to 1 thread if sysconf fails
+        }
+
+        // Initialize the linked list for threads
+        ThreadNode *head = NULL, *tail = NULL;
+        const uint32_t rows_per_thread = info->yres / num_threads;
+        const uint32_t remaining_rows = info->yres % num_threads;
+
+        for (int i = 0; i < num_threads; i++) {
+            ThreadNode *node = (ThreadNode *)malloc(sizeof(ThreadNode));
+            if (!node) {
+                posixError("malloc failed for ThreadNode");
+                return;
+            }
+            data.start_row = i * rows_per_thread;
+            data.num_rows = rows_per_thread;
+
+            node->data = data;
+            if (i == num_threads - 1) {
+                node->data.num_rows += remaining_rows; // Add remaining rows to the last thread
+            }
+            node->next = NULL;
+
+            if (tail) {
+                tail->next = node;
+            } else {
+                head = node;
+            }
+            tail = node;
+
+            pthread_create(&node->thread, NULL, processPpmRows, &node->data);
+        }
+
+        // Join all threads
+        ThreadNode *current = head;
+        while (current) {
+            pthread_join(current->thread, NULL);
+            ThreadNode *next = current->next;
+            free(current);
+            current = next;
+        }
+    } else {
+        // Process all rows serially
+        processPpmRows(&data);
+    }
+
+    if (fwrite(buffer, image_size, 1, fp) != 1) {
+        posixError("write error");
+        free(buffer);
+        return;
+    }
+
+    free(buffer);
+}
+
+static inline void dumpVideoMemoryBmpGrayscale(
   const uint8_t *video_memory,
   const vsi *info,
   const cmap *colormap,
-  uint32_t line_length,
+  const uint32_t line_length,
   FILE *fp
 ) {
   const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
@@ -364,16 +442,16 @@ static void dumpVideoMemoryBmpGrayscale(
   fwrite(&info_header, sizeof(info_header), 1, fp);
 
   // Write grayscale palette
-  for (int i = 0; i < 256; i++) {
+  for (uint32_t i = 0; i < 256; ++i) {
     uint8_t color[4] = {i, i, i, 0};
     fwrite(color, sizeof(color), 1, fp);
   }
 
-  for (uint32_t y = 0; y < info->yres; y++) {
+  for (uint32_t y = 0; y < info->yres; ++y) {
     const uint8_t *current = video_memory + (y + info->yoffset) * line_length +
                              info->xoffset * bytes_per_pixel;
     // horizontal scan
-    for (uint32_t x = 0; x < info->xres; x++) {
+    for (uint32_t x = 0; x < info->xres; ++x) {
       uint32_t pixel = 0;
       switch (bytes_per_pixel) {
         case 4:
@@ -385,9 +463,9 @@ static void dumpVideoMemoryBmpGrayscale(
           current += 2;
           break;
         default:
-          for (uint32_t i = 0; i < bytes_per_pixel; i++) {
+          for (uint32_t i = 0; i < bytes_per_pixel; ++i) {
             pixel |= current[0] << (i * 8);
-            current++;
+            ++current;
           }
           break;
       }
@@ -396,26 +474,26 @@ static void dumpVideoMemoryBmpGrayscale(
     buffer += row_step;
   }
 
-  if (fwrite(buffer_start_addr, 1, image_size, fp) != image_size)
+  if (fwrite(buffer_start_addr, image_size, 1, fp) != 1)
     posixError("write error");
 
   free(buffer_start_addr);
 }
 
-static void dumpVideoMemoryBmpColored(
+static inline void dumpVideoMemoryBmpColored(
   const uint8_t *video_memory,
   const vsi *info,
   const cmap *colormap,
-  uint32_t line_length,
+  const uint32_t line_length,
   FILE *fp
 ) {
 
   const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
-  uint32_t width = info->xres;
-  uint32_t height = info->yres;
+  const uint32_t width = info->xres;
+  const uint32_t height = info->yres;
 
-  uint32_t row_step = (width * 3 + 3) & (~3); // 3 bytes per pixel (RGB)
-  uint32_t image_size = row_step * height;
+  const uint32_t row_step = (width * 3 + 3) & (~3); // 3 bytes per pixel (RGB)
+  const uint32_t image_size = row_step * height;
   uint8_t * buffer = (uint8_t *)malloc(image_size);
   if (buffer == NULL)
     posixError("malloc failed");
@@ -436,9 +514,9 @@ static void dumpVideoMemoryBmpColored(
   fwrite(&file_header, sizeof(file_header), 1, fp);
   fwrite(&info_header, sizeof(info_header), 1, fp);
 
-  for (uint32_t y = 0; y < height; y++) {
+  for (uint32_t y = 0; y < height; ++y) {
     const uint8_t *current = video_memory + (y + info->yoffset) * line_length + info->xoffset * bytes_per_pixel;
-    for (uint32_t x = 0; x < width; x++) {
+    for (uint32_t x = 0; x < width; ++x) {
       uint32_t pixel = 0;
       switch (bytes_per_pixel) {
         case 4:
@@ -450,20 +528,29 @@ static void dumpVideoMemoryBmpColored(
           current += 2;
           break;
         default:
-          for (unsigned int i = 0; i < bytes_per_pixel; i++) {
+          for (unsigned int i = 0; i < bytes_per_pixel; ++i) {
             pixel |= current[0] << (i * 8);
-            current++;
+            ++current;
           }
           break;
       }
+
         buffer[x * 3 + 0] = getColor(pixel, &info->blue, colormap->blue);
         buffer[x * 3 + 1] = getColor(pixel, &info->green, colormap->green);
         buffer[x * 3 + 2] = getColor(pixel, &info->red, colormap->red);
+
+      /*
+        uint8x8x3_t rgb={
+            getColor(pixel, &info->blue, colormap->blue),
+            getColor(pixel, &info->green, colormap->green),
+            getColor(pixel, &info->red, colormap->red)};
+        vst3_u8(buffer + x*3, rgb);
+      */
     }
     buffer += row_step;
   }
 
-  if (fwrite(buffer_start_addr, 1, image_size, fp) != image_size)
+  if (fwrite(buffer_start_addr, image_size, 1, fp) != 1)
     posixError("write error");
 
   free(buffer_start_addr);
@@ -494,6 +581,7 @@ int main(int argc, char **argv){
     int option_index = 0;
     int flag_help = 0, flag_version = 0, flag_device = 0, flag_output = 0,
         flag_gray = 0, flag_colored = 0, flag_bitmap = 0,
+        flag_thread = 0,
         flag_err = 0;
     char *output_file_name;
 
@@ -505,7 +593,7 @@ int main(int argc, char **argv){
     */
 
     // Kısa ve Uzun seçenekleri tanımlama
-    static const char* short_options = "hvd:o:gcb";
+    static const char* short_options = "hvd:o:gcbt";
     static const struct option long_options[] = {
         {"help", no_argument, 0, 'h'},
         {"version", no_argument, 0, 'v'},
@@ -514,6 +602,7 @@ int main(int argc, char **argv){
         {"gray", no_argument, 0, 'g'},
         {"colored", no_argument, 0, 'c'},
         {"bitmap", no_argument, 0, 'b'},
+        {"thread", no_argument, 0, 't'},
         {0, 0, 0, 0}
     };
 
@@ -542,6 +631,9 @@ int main(int argc, char **argv){
             break;
         case 'b':
             flag_bitmap = 1;
+            break;
+        case 't':
+            flag_thread = 1;
             break;
         case '?':
             // error part
@@ -603,6 +695,13 @@ int main(int argc, char **argv){
     }
     if(flag_bitmap){
         fprintf(stderr,"Bitmap file mode mode is selected\n");
+    }
+    if(flag_thread){
+        fprintf(stderr,"Thread run mode mode is selected\n");
+        if(flag_gray || !flag_colored){
+            fprintf(stderr, "thread run mode only supported only with P6, PPM file format for now!\n");
+            exit(EXIT_FAILURE);
+        }
     }
 
     // The remains threated as mistake.
@@ -704,7 +803,7 @@ int main(int argc, char **argv){
             dumpVideoMemoryBmpGrayscale(video_memory, &var_info, &colormap, fix_info.line_length, ouput_file);
         }
     } else if(flag_colored){
-        dumpVideoMemoryPpm(video_memory, &var_info, &colormap, fix_info.line_length, ouput_file);
+        dumpVideoMemoryPpm(video_memory, &var_info, &colormap, fix_info.line_length, ouput_file, flag_thread);
     } else if(flag_gray){
         dumpVideoMemoryPgm(video_memory, &var_info, &colormap, fix_info.line_length, ouput_file);
     }
