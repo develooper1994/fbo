@@ -77,7 +77,9 @@ INTRO "\n" \
 typedef struct fb_fix_screeninfo fsi;
 typedef struct fb_var_screeninfo vsi;
 typedef struct fb_cmap cmap;
+typedef struct ThreadData;
 typedef void* (*ProcessRows)(void*);
+typedef void (*ProcessRowCallback)(uint32_t y, struct ThreadData *data, uint8_t *row);
 static bool black_is_zero = false;
 
 // wingdi-bitmap structure document
@@ -212,15 +214,17 @@ static inline void writeBmpHeader(uint32_t image_size, uint32_t width, uint32_t 
     }
 }
 
-typedef struct {
+typedef struct ThreadData{
     const uint8_t *video_memory;
     const vsi *info;
     const cmap *colormap;
     uint32_t line_length;
     uint8_t *buffer;
+    uint32_t bytes_per_pixel;
     uint32_t start_row;
     uint32_t row_step;
     uint32_t num_rows;
+    ProcessRowCallback processRowCallback;
     //BMP
     uint16_t bit_count;
 } ThreadData;
@@ -263,12 +267,11 @@ void* processPgmRows(void *arg) {
     // const uint32_t height = data->info->yres;
     uint8_t *row = data->buffer + data->start_row * data->row_step;
 
-    uint32_t pixel = 0;
     for (uint32_t y = data->start_row; y < data->start_row + data->num_rows; ++y) {
         const uint8_t *current = data->video_memory + (y + data->info->yoffset) * data->line_length +
                                  data->info->xoffset * bytes_per_pixel;
         for (uint32_t x = 0; x < width; ++x) {
-            pixel = 0;
+            uint32_t pixel = 0;
             switch (bytes_per_pixel) {
             case 4:
                 pixel = le32toh(*((uint32_t *)current));
@@ -300,12 +303,11 @@ void* processPpmRows(void *arg) {
     // const uint32_t height = data->info->yres;
     uint8_t *row = data->buffer + data->start_row * data->row_step;
 
-    uint32_t pixel = 0;
     for (uint32_t y = data->start_row; y < data->start_row + data->num_rows; ++y) {
         const uint8_t *current = data->video_memory + (y + data->info->yoffset) * data->line_length +
                                  data->info->xoffset * bytes_per_pixel;
         for (uint32_t x = 0; x < width; ++x) {
-            pixel = 0;
+            uint32_t pixel = 0;
             switch (bytes_per_pixel) {
             case 4:
                 pixel = le32toh(*((uint32_t *)current));
@@ -353,13 +355,12 @@ void* processBmpGrayscaleRows(void *arg){
     // const uint32_t image_size = height * data->row_step;
     uint8_t *row = data->buffer + data->start_row * data->row_step;
 
-    uint32_t pixel = 0;
     for (uint32_t y = data->start_row; y < data->start_row + data->num_rows; ++y) {
         const uint8_t *current = data->video_memory + (y + data->info->yoffset) * data->line_length +
                                  data->info->xoffset * bytes_per_pixel;
         // horizontal scan
         for (uint32_t x = 0; x < width; ++x) {
-            pixel = 0;
+            uint32_t pixel = 0;
             switch (bytes_per_pixel) {
             case 4:
                 pixel = le32toh(*((uint32_t *) current));
@@ -383,6 +384,29 @@ void* processBmpGrayscaleRows(void *arg){
 
     return NULL;
 }
+void processBmpColoredRow(uint32_t y, ThreadData *data, uint8_t *row){
+    const uint8_t *current = data->video_memory + (y + data->info->yoffset) * data->line_length + data->info->xoffset * data->bytes_per_pixel;
+    for (uint32_t x = 0; x < data->info->xres; ++x) {
+        uint32_t pixel = 0;
+        switch (data->bytes_per_pixel) {
+        case 4:
+            pixel = le32toh(*((uint32_t *) current));
+            current += 4;
+            break;
+        case 2:
+            pixel = le16toh(*((uint16_t *) current));
+            current += 2;
+            break;
+        default:
+            for (unsigned int i = 0; i < data->bytes_per_pixel; ++i) {
+                pixel |= *current << (i * sizeof(typeof(row)));
+                ++current;
+            }
+            break;
+        }
+        memmove(&row[x * 3], &pixel, sizeof(pixel));
+    }
+}
 void* processBmpColoredRows(void *arg){
     ThreadData *data = (ThreadData *)arg;
     const uint32_t bytes_per_pixel = (data->info->bits_per_pixel + 7) / 8;
@@ -391,11 +415,10 @@ void* processBmpColoredRows(void *arg){
     // const uint32_t image_size = height * data->row_step;
     uint8_t *row = data->buffer + data->start_row * data->row_step;
 
-    uint32_t pixel = 0;
     for (uint32_t y = data->start_row; y < data->start_row + data->num_rows; ++y) {
         const uint8_t *current = data->video_memory + (y + data->info->yoffset) * data->line_length + data->info->xoffset * bytes_per_pixel;
         for (uint32_t x = 0; x < width; ++x) {
-            pixel = 0;
+            uint32_t pixel = 0;
             switch (bytes_per_pixel) {
             case 4:
                 pixel = le32toh(*((uint32_t *) current));
@@ -412,38 +435,35 @@ void* processBmpColoredRows(void *arg){
                 }
                 break;
             }
-
-            /*
-            row[x * 3 + 0] = getColor(pixel, &info->blue, colormap->blue);
-            row[x * 3 + 1] = getColor(pixel, &info->green, colormap->green);
-            row[x * 3 + 2] = getColor(pixel, &info->red, colormap->red);
-            // row[x * 3 + 3] = getColor(pixel, &info->transp, colormap->transp);
-            */
-
-            /*
-              rgbPixel.components =
-                (getColor(pixel, &info->red, colormap->red) << 16) |
-                (getColor(pixel, &info->green, colormap->green) << 8) |
-                (getColor(pixel, &info->blue, colormap->blue) << 0);
-                // (getColor(pixel, &data->info->transp, data->colormap->transp) << 24);
-              memmove(&row[x * 3], &rgbPixel.components, sizeof(rgbPixel.components));
-            */
             memmove(&row[x * 3], &pixel, sizeof(pixel));
         }
+        row += data->row_step;
+    }
+    return NULL;
+}
+
+void* process(void *arg){
+    ThreadData *data = (ThreadData *)arg;
+    uint8_t *row = data->buffer + data->start_row * data->row_step;
+
+    for (uint32_t y = data->start_row; y < data->start_row + data->num_rows; ++y) {
+        data->processRowCallback(y, arg, row);
+        //processBmpColoredRow(y, data, row);
         row += data->row_step;
     }
 
     return NULL;
 }
 
-static inline void dumpVideoMemory(const uint8_t *video_memory, const vsi *info, const struct fb_cmap *colormap, uint32_t line_length, FILE *fp, int use_multithreading, const char *format) {
+static inline void dumpVideoMemory(const uint8_t *video_memory, const vsi *info, const cmap *colormap, uint32_t line_length, FILE *fp, int use_multithreading, const char *format) {
     // P4, P5, P6, BMP, bmp, BMPC, bmpc, BMPG, bmpg
-    // const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
+    const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
     const uint32_t width = info->xres;
     const uint32_t height = info->yres;
     uint32_t row_step = 0;
     uint16_t bit_count = 24;
     ProcessRows processRows;
+    ProcessRowCallback processRowCallback;
 
     // NETPBM
     if (!strcmp(format, "P4") || !strcmp(format, "p4")) {
@@ -466,6 +486,7 @@ static inline void dumpVideoMemory(const uint8_t *video_memory, const vsi *info,
             row_step = (width * 3 + 3) & (~3); // 3 bytes per pixel (RGB)
             bit_count = 24;
             processRows = processBmpColoredRows;
+            processRowCallback = processBmpColoredRow;
         } else if (!strcmp(format, "BMPG") || !strcmp(format, "bmpg")) {
             // Grayscale
             row_step = (width + 3) & (~3);
@@ -478,6 +499,7 @@ static inline void dumpVideoMemory(const uint8_t *video_memory, const vsi *info,
         // No one knows
         row_step = 0;
         processRows = NULL;
+        processRowCallback = NULL;
         notSupported("File format not supported");
     }
 
@@ -493,8 +515,10 @@ static inline void dumpVideoMemory(const uint8_t *video_memory, const vsi *info,
         .colormap = colormap,
         .line_length = line_length,
         .buffer = buffer,
+        .bytes_per_pixel = bytes_per_pixel,
         .row_step = row_step,
-        .bit_count = bit_count
+        .bit_count = bit_count,
+        .processRowCallback = processRowCallback
         // .start_row = 0,
         // .num_rows = info->yres
     };
