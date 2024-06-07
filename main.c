@@ -39,7 +39,9 @@
 #define VERSION_MINOR "0.6"
 #define VERSION VERSION_MAJOR "." VERSION_MINOR
 #define INTRO "This software captures what printed to framebuffer. \n" \
-    "Software only supports pbm(P4), pgm(P5) and ppm(P6) image formats. \n" \
+    "Software supports netpbm(P4,P5,P6)(pbm,pgm,ppm) image formats" \
+    "and also bmp colored(bgr channel order) and grayscale image formats. \n" \
+    "Note: Framebuffer channel order is BGR but netpbm channel order is RGB!" \
     "Special thanks to https://github.com/jwilk/fbcat repo!"
 #define DefaultFbDev "/dev/fb"
 #define DefaultOutputFile stdout
@@ -49,11 +51,11 @@
 "\n" \
 INTRO "\n" \
 "VERSION: " VERSION "\n" \
-"-h <noarg> or --help <noarg> : print help \n" \
-"-v <noarg> or --version <noarg> : print the version \n" \
+"-h or --help <noarg> : print help \n" \
+"-v or --version <noarg> : print the version \n" \
 "-d or --device <arg> : framebuffer device. Default: " DefaultFbDev "\n" \
 "-o or --output <arg> : output file \n" \
-"-g or --gray <noarg> : grayscale color mode. P5, pgm file format\n" \
+"-g or --gray <noarg> : grayscale color mode. P5, pgm file format. RGB channel order\n" \
 "-c or --colored <noarg> : full color mode. P6, ppm file format\n" \
 "-b or --colored <noarg> : bitmap file format otherwise file format is pgm or ppm\n>"\
 "-t or --thread <noarg> : Use all cores of the processor. It may affect on multicore systems on bigger screens. (only PGM and PPM for now)\n" \
@@ -64,6 +66,8 @@ INTRO "\n" \
 #define PGM "pgm"
 #define PPM "ppm"
 #define BMP "bmp"
+#define BMPC "bmpc"
+#define BMPg "bmpg"
 
 // exit codes
 #define EXIT_POSIX_ERROR 2
@@ -195,7 +199,9 @@ typedef struct ThreadNode {
 // PBM, PGM, PPM
 void* processPbmRows(void *arg) {
     ThreadData *data = (ThreadData *)arg;
-    const uint32_t bytes_per_row = (data->info->xres + 7) / 8;
+    const uint32_t width = data->info->xres;
+    //const uint32_t height = data->info->yres;
+    const uint32_t bytes_per_row = (width + 7) / 8;
     const uint32_t row_step = bytes_per_row;
     uint8_t *row = data->buffer + data->start_row * row_step;
 
@@ -220,13 +226,15 @@ void* processPbmRows(void *arg) {
 void* processPgmRows(void *arg) {
     ThreadData *data = (ThreadData *)arg;
     const uint32_t bytes_per_pixel = (data->info->bits_per_pixel + 7) / 8;
-    const uint32_t row_step = data->info->xres;
+    const uint32_t width = data->info->xres;
+    // const uint32_t height = data->info->yres;
+    const uint32_t row_step = width;
     uint8_t *row = data->buffer + data->start_row * row_step;
 
-    for (uint32_t y = data->start_row; y < data->start_row + data->num_rows; y++) {
+    for (uint32_t y = data->start_row; y < data->start_row + data->num_rows; ++y) {
         const uint8_t *current = data->video_memory + (y + data->info->yoffset) * data->line_length +
                                  data->info->xoffset * bytes_per_pixel;
-        for (uint32_t x = 0; x < data->info->xres; x++) {
+        for (uint32_t x = 0; x < width; ++x) {
             uint32_t pixel = 0;
             switch (bytes_per_pixel) {
             case 4:
@@ -238,8 +246,8 @@ void* processPgmRows(void *arg) {
                 current += 2;
                 break;
             default:
-                for (uint32_t i = 0; i < bytes_per_pixel; i++) {
-                    pixel |= current[0] << (i * 8);
+                for (uint32_t i = 0; i < bytes_per_pixel; ++i) {
+                    pixel |= current[0] << (i * sizeof(typeof(row)));
                     current++;
                 }
                 break;
@@ -251,15 +259,19 @@ void* processPgmRows(void *arg) {
     return NULL;
 }
 void* processPpmRows(void *arg) {
+    // Framebuffer channel order BGR but P6 channel order is RGB!
+    // So that RED <-> BLUE channels has to swap
     ThreadData *data = (ThreadData *)arg;
     const uint32_t bytes_per_pixel = (data->info->bits_per_pixel + 7) / 8;
-    uint32_t row_step = data->info->xres * 3;
+    const uint32_t width = data->info->xres;
+    // const uint32_t height = data->info->yres;
+    const uint32_t row_step = width * 3;
     uint8_t *row = data->buffer + data->start_row * row_step;
 
     for (uint32_t y = data->start_row; y < data->start_row + data->num_rows; ++y) {
         const uint8_t *current = data->video_memory + (y + data->info->yoffset) * data->line_length +
                                  data->info->xoffset * bytes_per_pixel;
-        for (uint32_t x = 0; x < data->info->xres; ++x) {
+        for (uint32_t x = 0; x < width; ++x) {
             uint32_t pixel = 0;
             switch (bytes_per_pixel) {
             case 4:
@@ -286,7 +298,7 @@ void* processPpmRows(void *arg) {
             */
 
             // Initialize RgbaPixel
-            // row[x * 3] = pixel; // red <-> blue colors changed
+            // row[x * 3] = pixel; // red <-> blue colors changed.
             // row[x * 3] = (getColor(...; // memory alignment problem with "uint32_t* row"!
             pixel =
                 (getColor(pixel, &data->info->red, data->colormap->red) << 0) |
@@ -301,21 +313,106 @@ void* processPpmRows(void *arg) {
 }
 void* processBmpGrayscaleRows(void *arg){
     ThreadData *data = (ThreadData *)arg;
+    const uint32_t bytes_per_pixel = (data->info->bits_per_pixel + 7) / 8;
+    const uint32_t width = data->info->xres;
+    const uint32_t height = data->info->yres;
+    const uint32_t row_step = (width + 3) & (~3);
+    const uint32_t image_size = row_step * height;
+    uint8_t * row = (uint8_t *)malloc(image_size);
+
+    for (uint32_t y = data->start_row; y < data->start_row + data->num_rows; ++y) {
+        const uint8_t *current = data->video_memory + (y + data->info->yoffset) * data->line_length +
+                                 data->info->xoffset * bytes_per_pixel;
+        // horizontal scan
+        for (uint32_t x = 0; x < width; ++x) {
+            uint32_t pixel = 0;
+            switch (bytes_per_pixel) {
+            case 4:
+                pixel = le32toh(*((uint32_t *) current));
+                current += 4;
+                break;
+            case 2:
+                pixel = le16toh(*((uint16_t *) current));
+                current += 2;
+                break;
+            default:
+                for (uint32_t i = 0; i < bytes_per_pixel; ++i) {
+                    pixel |= *current << (i * sizeof(typeof(row)));
+                    ++current;
+                }
+                break;
+            }
+            row[x] = getGrayscale(pixel, data->info, data->colormap);
+        }
+        row += row_step;
+    }
 
     return NULL;
 }
 void* processBmpColoredRows(void *arg){
     ThreadData *data = (ThreadData *)arg;
+    const uint32_t bytes_per_pixel = (data->info->bits_per_pixel + 7) / 8;
+    const uint32_t width = data->info->xres;
+    const uint32_t height = data->info->yres;
+    const uint32_t row_step = (width * 3 + 3) & (~3); // 3 bytes per pixel (RGB)
+    const uint32_t image_size = row_step * height;
+    uint8_t * row = (uint8_t *)malloc(image_size);
+
+    for (uint32_t y = 0; y < height; ++y) {
+        const uint8_t *current = data->video_memory + (y + data->info->yoffset) * data->line_length + data->info->xoffset * bytes_per_pixel;
+        for (uint32_t x = 0; x < width; ++x) {
+            uint32_t pixel = 0;
+            switch (bytes_per_pixel) {
+            case 4:
+                pixel = le32toh(*((uint32_t *) current));
+                current += 4;
+                break;
+            case 2:
+                pixel = le16toh(*((uint16_t *) current));
+                current += 2;
+                break;
+            default:
+                for (unsigned int i = 0; i < bytes_per_pixel; ++i) {
+                    pixel |= *current << (i * sizeof(typeof(row)));
+                    ++current;
+                }
+                break;
+            }
+
+            /*
+            row[x * 3 + 0] = getColor(pixel, &info->blue, colormap->blue);
+            row[x * 3 + 1] = getColor(pixel, &info->green, colormap->green);
+            row[x * 3 + 2] = getColor(pixel, &info->red, colormap->red);
+            // row[x * 3 + 3] = getColor(pixel, &info->transp, colormap->transp);
+            */
+
+            /*
+              rgbPixel.components =
+                (getColor(pixel, &info->red, colormap->red) << 16) |
+                (getColor(pixel, &info->green, colormap->green) << 8) |
+                (getColor(pixel, &info->blue, colormap->blue) << 0);
+                // (getColor(pixel, &data->info->transp, data->colormap->transp) << 24);
+              memmove(&row[x * 3], &rgbPixel.components, sizeof(rgbPixel.components));
+            */
+            memmove(&row[x * 3], &pixel, sizeof(pixel));
+        }
+        row += row_step;
+    }
 
     return NULL;
 }
 
 static inline void dumpVideoMemory(const uint8_t *video_memory, const vsi *info, const struct fb_cmap *colormap, uint32_t line_length, FILE *fp, int use_multithreading, const char *format) {
-    //const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
+    const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
+    const uint32_t width = info->xres;
+    const uint32_t height = info->yres;
     const uint32_t row_step = //(format[1] == '6') ? info->xres * 3 :
-                        (format[1] == '6') ? info->xres * 3 :
-                        (format[1] == '5') ? info->xres :
-                        (format[1] == '4') ? (info->xres + 7) / 8 : 0;
+                        (!strcmp(format, "P6") || !strcmp(format, "p6")) ? info->xres * 3 :
+                        (!strcmp(format, "P5") || !strcmp(format, "p5")) ? info->xres :
+                        (!strcmp(format, "P4") || !strcmp(format, "p4")) ? (info->xres + 7) / 8 :
+                        (!strcmp(format, "BMP") || !strcmp(format, "bmp") || !strcmp(format, "BMPC") || !strcmp(format, "bmpc")) ? (width * 3 + 3) & (~3) :
+                        (!strcmp(format, "BMPG") || !strcmp(format, "bmpg")) ? (width + 3) & (~3) :
+                                                                            0;
     const uint32_t image_size = info->yres * row_step;
     uint8_t *buffer = (uint8_t *)malloc(image_size);
     if (buffer == NULL) {
