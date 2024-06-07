@@ -36,7 +36,7 @@
 #endif
 
 #define VERSION_MAJOR "1"
-#define VERSION_MINOR "0.6"
+#define VERSION_MINOR "1.0"
 #define VERSION VERSION_MAJOR "." VERSION_MINOR
 #define INTRO "This software captures what printed to framebuffer. \n" \
     "Software supports netpbm(P4,P5,P6)(pbm,pgm,ppm) image formats" \
@@ -57,7 +57,7 @@ INTRO "\n" \
 "-o or --output <arg> : output file \n" \
 "-g or --gray <noarg> : grayscale color mode. P5, pgm file format. RGB channel order\n" \
 "-c or --colored <noarg> : full color mode. P6, ppm file format\n" \
-"-b or --colored <noarg> : bitmap file format otherwise file format is pgm or ppm\n>"\
+"-b or --colored <noarg> : bitmap file format otherwise file format is pgm or ppm\n"\
 "-t or --thread <noarg> : Use all cores of the processor. It may affect on multicore systems on bigger screens. (only PGM and PPM for now)\n" \
 "Don't mix color options! \n"
 

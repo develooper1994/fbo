@@ -1,15 +1,16 @@
 # fbo
 This software captures what printed to framebuffer.
-Software only supports pbm(P4), pgm(P5) and ppm(P6) image formats.
-Special thanks to https://github.com/jwilk/fbcat repo!
-VERSION: 1.0.0
--h <noarg> or --help <noarg> : print help
--v <noarg> or --version <noarg> : print the version
--d <arg> or --device <arg> : framebuffer device. Default: /dev/fb
--o <arg> or --output <arg> :
--g or --gray <noarg>
--c or --colored <noarg>
--t or --thread <noarg> : Use all cores of the processor. It may affect on multicore systems on bigger screens. (only PGM and PPM for now)\n
+Software supports netpbm(P4,P5,P6)(pbm,pgm,ppm) image formatsand also bmp colored(bgr channel order) and grayscale image formats.
+Note: Framebuffer channel order is BGR but netpbm channel order is RGB!Special thanks to https://github.com/jwilk/fbcat repo!
+VERSION: 1.0.6
+-h or --help <noarg> : print help
+-v or --version <noarg> : print the version
+-d or --device <arg> : framebuffer device. Default: /dev/fb
+-o or --output <arg> : output file
+-g or --gray <noarg> : grayscale color mode. P5, pgm file format. RGB channel order
+-c or --colored <noarg> : full color mode. P6, ppm file format
+-b or --colored <noarg> : bitmap file format otherwise file format is pgm or ppm
+-t or --thread <noarg> : Use all cores of the processor. It may affect on multicore systems on bigger screens. (only PGM and PPM for now)
 Don't mix color options!
 
 ## NetPBM Viewer
