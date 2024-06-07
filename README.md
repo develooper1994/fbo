@@ -9,6 +9,7 @@ VERSION: 1.0.0
 -o <arg> or --output <arg> :
 -g or --gray <noarg>
 -c or --colored <noarg>
+-t or --thread <noarg> : Use all cores of the processor. It may affect on multicore systems on bigger screens. (only PGM and PPM for now)\n
 Don't mix color options!
 
 ## NetPBM Viewer
@@ -25,6 +26,7 @@ Don't mix color options!
     - make CC=arm-linux-gnueabi-gcc // change it as you wish
 
 - https://github.com/develooper1994/fbo/blob/main/fbo.pro
+    - change "target.path" as you wish
 
 ## Example Commanline Compilation
 (path)/arm-poky-linux-gnueabi-gcc \
