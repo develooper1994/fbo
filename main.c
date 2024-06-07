@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <assert.h>
 
+#include <string.h>
 #include <unistd.h>
 #include <getopt.h>
 #include <errno.h>
@@ -50,8 +51,8 @@ INTRO "\n" \
 "VERSION: " VERSION "\n" \
 "-h <noarg> or --help <noarg> : print help \n" \
 "-v <noarg> or --version <noarg> : print the version \n" \
-"-d <arg> or --device <arg> : framebuffer device. Default: " DefaultFbDev "\n" \
-"-o <arg> or --output <arg> : output file \n" \
+"-d or --device <arg> : framebuffer device. Default: " DefaultFbDev "\n" \
+"-o or --output <arg> : output file \n" \
 "-g or --gray <noarg> : grayscale color mode. P5, pgm file format\n" \
 "-c or --colored <noarg> : full color mode. P6, ppm file format\n" \
 "-b or --colored <noarg> : bitmap file format otherwise file format is pgm or ppm\n>"\
@@ -144,6 +145,10 @@ static inline uint8_t getColor(uint32_t pixel, const struct fb_bitfield *bitfiel
                                uint16_t *colormap) {
     return colormap[(pixel >> bitfield->offset) & ((1 << bitfield->length) - 1)] >> 8;
 }
+static inline uint32_t getColorOptimized(uint32_t pixel, const struct fb_bitfield *bitfield,
+                               uint16_t *colormap) {
+    return colormap[(pixel >> bitfield->offset) & ((1 << bitfield->length) - 1)];
+}
 static inline uint8_t getGrayscale(uint32_t pixel, const vsi *info,
                                    const cmap *colormap) {
     const uint8_t red = colormap->red[(pixel >> info->red.offset) & ((1 << info->red.length) - 1)] >> 8;
@@ -171,6 +176,15 @@ static inline uint8_t reverseBits(uint8_t b) {
    */
     return (b * 0x0202020202ULL & 0x010884422010ULL) % 1023;
 }
+typedef union {
+    struct {
+      uint8_t red;
+      uint8_t green;
+      uint8_t blue;
+      uint8_t alpha;
+    } color;
+    uint32_t components;
+} RgbaPixel;
 typedef struct {
     const uint8_t *video_memory;
     const vsi *info;
@@ -185,15 +199,6 @@ typedef struct ThreadNode {
     ThreadData data;
     struct ThreadNode *next;
 } ThreadNode;
-typedef union {
-    uint32_t pixel;       // Whole pixel value
-    struct {
-        uint8_t red;      // Red component (8 bits)
-        uint8_t green;    // Green component (8 bits)
-        uint8_t blue;     // Blue component (8 bits)
-        uint8_t alpha;    // Alpha component (8 bits) or other components if needed
-    };
-} Pixel;
 static inline uint8_t * allocateImageBuffer(const vsi *info, const uint32_t row_step){
     const uint32_t image_size = info->yres * row_step;
     uint8_t *buffer = (uint8_t *)malloc(image_size);
@@ -302,38 +307,42 @@ void* processPpmRows(void *arg) {
     // VERSION 2
     ThreadData *data = (ThreadData *)arg;
     const uint32_t bytes_per_pixel = (data->info->bits_per_pixel + 7) / 8;
-    const uint32_t row_step = data->info->xres * 3;
-    uint8_t *row = data->buffer + data->start_row * row_step;
+    uint8_t *row = data->buffer + data->start_row * data->info->xres * 3;
+    RgbaPixel rgbaPixel;
 
     for (uint32_t y = data->start_row; y < data->start_row + data->num_rows; ++y) {
         const uint8_t *current = data->video_memory + (y + data->info->yoffset) * data->line_length +
                                  data->info->xoffset * bytes_per_pixel;
-        for (uint32_t x = 0; x < data->info->xres; x += 4) { // Process 4 pixels at a time
-            uint32_t pixels[4] = {0};
-            for (uint32_t i = 0; i < 4; i++) {
-                switch (bytes_per_pixel) {
-                case 4:
-                    pixels[i] = le32toh(*((uint32_t *)(current + i * 4)));
-                    break;
-                case 2:
-                    pixels[i] = le32toh(*((uint32_t *)(current + i * 4)));
-                    break;
-                default:
-                    for (uint32_t j = 0; j < bytes_per_pixel; j++) {
-                        pixels[i] |= current[i * bytes_per_pixel + j] << (j * 8);
-                    }
-                    break;
+        for (uint32_t x = 0; x < data->info->xres; ++x) {
+            uint32_t pixel = 0;
+            switch (bytes_per_pixel) {
+            case 4:
+                pixel = le32toh(*((uint32_t *)current));
+                current += 4;
+                break;
+            case 2:
+                pixel = le16toh(*((uint16_t *)current));
+                current += 2;
+                break;
+            default:
+                for (uint32_t i = 0; i < bytes_per_pixel; i++) {
+                    pixel |= *current << (i * 8);
+                    current++;
                 }
+                break;
             }
-            for (uint32_t i = 0; i < 4; ++i) {
-                row[(x + i) * 3 + 0] = getColor(pixels[i], &data->info->red, data->colormap->red);
-                row[(x + i) * 3 + 1] = getColor(pixels[i], &data->info->green, data->colormap->green);
-                row[(x + i) * 3 + 2] = getColor(pixels[i], &data->info->blue, data->colormap->blue);
-                // row[(x + i) * 3 + 3] = getColor(pixels[i], &data->info->transp, data->colormap->transp);
-            }
-            current += 4 * bytes_per_pixel;
+
+            // Initialize RgbaPixel
+            rgbaPixel.components =
+                (getColor(pixel, &data->info->red, data->colormap->red) << 0) |
+                (getColor(pixel, &data->info->green, data->colormap->green) << 8) |
+                (getColor(pixel, &data->info->blue, data->colormap->blue) << 16) |
+                (getColor(pixel, &data->info->transp, data->colormap->transp) << 24);
+            memmove(&row[x * 3], &rgbaPixel.components, sizeof(rgbaPixel.components));
+            // row[x * 3] = (getColor(pixel, &data->info->red, data->colormap->red) << 0) | (getColor(pixel, &data->info->green, data->colormap->green) << 8) | (getColor(pixel, &data->info->blue, data->colormap->blue) << 16) | (getColor(pixel, &data->info->transp, data->colormap->transp) << 24);
+            //row[x * 3] = (getColorOptimized(pixel, &data->info->red, data->colormap->red) << 0) | (getColorOptimized(pixel, &data->info->green, data->colormap->green) << 8) | (getColorOptimized(pixel, &data->info->blue, data->colormap->blue) << 16) | (getColorOptimized(pixel, &data->info->transp, data->colormap->transp) << 24);
         }
-        row += row_step;
+        row += data->info->xres * 3;
     }
     return NULL;
 }
@@ -341,7 +350,7 @@ void* processPpmRows(void *arg) {
 static inline void dumpVideoMemory(const uint8_t *video_memory, const vsi *info, const struct fb_cmap *colormap, uint32_t line_length, FILE *fp, int use_multithreading, const char *format) {
     //const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
     const uint32_t row_step = //(format[1] == '6') ? info->xres * 3 :
-                        (format[1] == '6') ? info->xres * sizeof(Pixel) :
+                        (format[1] == '6') ? info->xres * sizeof(RgbaPixel) :
                         (format[1] == '5') ? info->xres :
                         (format[1] == '4') ? (info->xres + 7) / 8 : 0;
     const uint32_t image_size = info->yres * row_step;
@@ -789,8 +798,9 @@ int main(int argc, char **argv){
     case FB_VISUAL_DIRECTCOLOR:
     case FB_VISUAL_PSEUDOCOLOR:
     case FB_VISUAL_STATIC_PSEUDOCOLOR:
-        if (ioctl(fd, FBIOGETCMAP, &colormap) != 0)
+        if (ioctl(fd, FBIOGETCMAP, &colormap) != 0){
             posixError("FBIOGETCMAP failed");
+        }
         break;
     case FB_VISUAL_MONO01:
         is_mono = true;
@@ -820,16 +830,18 @@ int main(int argc, char **argv){
         mmapped_memory = false;
         const size_t buffer_size = fix_info.line_length * var_info.yres;
         video_memory = (uint8_t *)malloc(buffer_size);
-        if (video_memory == NULL)
+        if (video_memory == NULL){
             posixError("malloc failed");
+        }
         off_t offset = lseek(fd, fix_info.line_length * var_info.yoffset, SEEK_SET);
-        if (offset == (off_t)-1)
+        if (offset == (off_t)-1){
             posixError("lseek failed");
+        }
         var_info.yoffset = 0;
         ssize_t read_bytes = read(fd, video_memory, buffer_size);
-        if (read_bytes < 0)
+        if (read_bytes < 0){
             posixError("read failed");
-        else if ((size_t)read_bytes != buffer_size) {
+        } else if ((size_t)read_bytes != buffer_size) {
             errno = EIO;
             posixError("read failed");
         }
