@@ -181,7 +181,7 @@ typedef union {
       uint8_t red;
       uint8_t green;
       uint8_t blue;
-      uint8_t alpha;
+      //uint8_t alpha;
     } color;
     uint32_t components;
 } RgbaPixel;
@@ -290,7 +290,7 @@ void* __processPpmRowsVER1__(void *arg) {
                 break;
             default:
                 for (uint32_t i = 0; i < bytes_per_pixel; i++) {
-                    pixel |= current[0] << (i * 8);
+                    pixel |= *current << (i * 8);
                     current++;
                 }
                 break;
@@ -307,7 +307,8 @@ void* processPpmRows(void *arg) {
     // VERSION 2
     ThreadData *data = (ThreadData *)arg;
     const uint32_t bytes_per_pixel = (data->info->bits_per_pixel + 7) / 8;
-    uint8_t *row = data->buffer + data->start_row * data->info->xres * 3;
+    uint32_t row_step = data->info->xres * 3;
+    uint8_t *row = data->buffer + data->start_row * row_step;
     RgbaPixel rgbaPixel;
 
     for (uint32_t y = data->start_row; y < data->start_row + data->num_rows; ++y) {
@@ -326,23 +327,23 @@ void* processPpmRows(void *arg) {
                 break;
             default:
                 for (uint32_t i = 0; i < bytes_per_pixel; i++) {
-                    pixel |= *current << (i * 8);
+                    pixel |= *current << (i * sizeof(typeof(row)));
                     current++;
                 }
                 break;
             }
 
             // Initialize RgbaPixel
+            // row[x * 3] = pixel; // red <-> blue colors changed
+            // row[x * 3] = (getColor(...; // memory alignment problem with "uint32_t* row"!
             rgbaPixel.components =
                 (getColor(pixel, &data->info->red, data->colormap->red) << 0) |
                 (getColor(pixel, &data->info->green, data->colormap->green) << 8) |
-                (getColor(pixel, &data->info->blue, data->colormap->blue) << 16) |
-                (getColor(pixel, &data->info->transp, data->colormap->transp) << 24);
+                (getColor(pixel, &data->info->blue, data->colormap->blue) << 16);
+                // (getColor(pixel, &data->info->transp, data->colormap->transp) << 24);
             memmove(&row[x * 3], &rgbaPixel.components, sizeof(rgbaPixel.components));
-            // row[x * 3] = (getColor(pixel, &data->info->red, data->colormap->red) << 0) | (getColor(pixel, &data->info->green, data->colormap->green) << 8) | (getColor(pixel, &data->info->blue, data->colormap->blue) << 16) | (getColor(pixel, &data->info->transp, data->colormap->transp) << 24);
-            //row[x * 3] = (getColorOptimized(pixel, &data->info->red, data->colormap->red) << 0) | (getColorOptimized(pixel, &data->info->green, data->colormap->green) << 8) | (getColorOptimized(pixel, &data->info->blue, data->colormap->blue) << 16) | (getColorOptimized(pixel, &data->info->transp, data->colormap->transp) << 24);
         }
-        row += data->info->xres * 3;
+        row += row_step; // /(sizeof(typeof(row))/sizeof(uint8_t));
     }
     return NULL;
 }
