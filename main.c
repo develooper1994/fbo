@@ -109,14 +109,17 @@ static BITMAPFILEHEADER file_header = {
 };
 /// BMP info header
 static BITMAPINFOHEADER info_header = {
-.biSize = sizeof(BITMAPINFOHEADER),
-// .biWidth = width,
-// .biHeight = -height, // top-down BMP
-.biPlanes = 1,
-.biCompression = 0,
-// .biSizeImage = data_size,
-.biXPelsPerMeter = 0,
-.biYPelsPerMeter = 0,
+    .biSize = sizeof(BITMAPINFOHEADER),
+    // .biWidth = width,
+    // .biHeight = -height, // top-down BMP
+    .biPlanes = 1,
+    // .biBitCount
+    .biCompression = 0,
+    // .biSizeImage = data_size,
+    .biXPelsPerMeter = 0,
+    .biYPelsPerMeter = 0,
+    // info_header.biClrUsed = 0 // all colors are important
+    // info_header.biClrImportant = 0; // all colors are important
 };
 
 // utility functions
@@ -145,10 +148,6 @@ static inline uint8_t getColor(uint32_t pixel, const struct fb_bitfield *bitfiel
                                uint16_t *colormap) {
     return colormap[(pixel >> bitfield->offset) & ((1 << bitfield->length) - 1)] >> 8;
 }
-static inline uint32_t getColorOptimized(uint32_t pixel, const struct fb_bitfield *bitfield,
-                               uint16_t *colormap) {
-    return colormap[(pixel >> bitfield->offset) & ((1 << bitfield->length) - 1)];
-}
 static inline uint8_t getGrayscale(uint32_t pixel, const vsi *info,
                                    const cmap *colormap) {
     const uint8_t red = colormap->red[(pixel >> info->red.offset) & ((1 << info->red.length) - 1)] >> 8;
@@ -176,15 +175,6 @@ static inline uint8_t reverseBits(uint8_t b) {
    */
     return (b * 0x0202020202ULL & 0x010884422010ULL) % 1023;
 }
-typedef union {
-    struct {
-      uint8_t red;
-      uint8_t green;
-      uint8_t blue;
-      //uint8_t alpha;
-    } color;
-    uint32_t components;
-} RgbaPixel;
 typedef struct {
     const uint8_t *video_memory;
     const vsi *info;
@@ -193,21 +183,14 @@ typedef struct {
     uint8_t *buffer;
     uint32_t start_row;
     uint32_t num_rows;
+    //BMP
+    uint16_t bit_count;
 } ThreadData;
 typedef struct ThreadNode {
     pthread_t thread;
     ThreadData data;
     struct ThreadNode *next;
 } ThreadNode;
-static inline uint8_t * allocateImageBuffer(const vsi *info, const uint32_t row_step){
-    const uint32_t image_size = info->yres * row_step;
-    uint8_t *buffer = (uint8_t *)malloc(image_size);
-    if (buffer == NULL)
-        posixError("malloc failed");
-    assert(buffer != NULL);
-
-    return buffer;
-}
 
 // PBM, PGM, PPM
 void* processPbmRows(void *arg) {
@@ -267,49 +250,11 @@ void* processPgmRows(void *arg) {
     }
     return NULL;
 }
-void* __processPpmRowsVER1__(void *arg) {
-    // VERSION 1
-    ThreadData *data = (ThreadData *)arg;
-    const uint32_t bytes_per_pixel = (data->info->bits_per_pixel + 7) / 8;
-    const uint32_t row_step = data->info->xres * 3;
-    uint8_t *row = data->buffer + data->start_row * row_step;
-
-    for (uint32_t y = data->start_row; y < data->start_row + data->num_rows; y++) {
-        const uint8_t *current = data->video_memory + (y + data->info->yoffset) * data->line_length +
-                                 data->info->xoffset * bytes_per_pixel;
-        for (uint32_t x = 0; x < data->info->xres; x++) {
-            uint32_t pixel = 0;
-            switch (bytes_per_pixel) {
-            case 4:
-                pixel = le32toh(*((uint32_t *)current));
-                current += 4;
-                break;
-            case 2:
-                pixel = le16toh(*((uint16_t *)current));
-                current += 2;
-                break;
-            default:
-                for (uint32_t i = 0; i < bytes_per_pixel; i++) {
-                    pixel |= *current << (i * 8);
-                    current++;
-                }
-                break;
-            }
-            row[x * 3 + 0] = getColor(pixel, &data->info->red, data->colormap->red);
-            row[x * 3 + 1] = getColor(pixel, &data->info->green, data->colormap->green);
-            row[x * 3 + 2] = getColor(pixel, &data->info->blue, data->colormap->blue);
-        }
-        row += row_step;
-    }
-    return NULL;
-}
 void* processPpmRows(void *arg) {
-    // VERSION 2
     ThreadData *data = (ThreadData *)arg;
     const uint32_t bytes_per_pixel = (data->info->bits_per_pixel + 7) / 8;
     uint32_t row_step = data->info->xres * 3;
     uint8_t *row = data->buffer + data->start_row * row_step;
-    RgbaPixel rgbaPixel;
 
     for (uint32_t y = data->start_row; y < data->start_row + data->num_rows; ++y) {
         const uint8_t *current = data->video_memory + (y + data->info->yoffset) * data->line_length +
@@ -326,32 +271,49 @@ void* processPpmRows(void *arg) {
                 current += 2;
                 break;
             default:
-                for (uint32_t i = 0; i < bytes_per_pixel; i++) {
+                for (uint32_t i = 0; i < bytes_per_pixel; ++i) {
                     pixel |= *current << (i * sizeof(typeof(row)));
                     current++;
                 }
                 break;
             }
 
+            /*
+            row[x * 3 + 0] = getColor(pixel, &data->info->red, data->colormap->red);
+            row[x * 3 + 1] = getColor(pixel, &data->info->green, data->colormap->green);
+            row[x * 3 + 2] = getColor(pixel, &data->info->blue, data->colormap->blue);
+            // row[x * 3 + 3] = getColor(pixel, &data->info->transp, data->colormap->transp);
+            */
+
             // Initialize RgbaPixel
             // row[x * 3] = pixel; // red <-> blue colors changed
             // row[x * 3] = (getColor(...; // memory alignment problem with "uint32_t* row"!
-            rgbaPixel.components =
+            pixel =
                 (getColor(pixel, &data->info->red, data->colormap->red) << 0) |
                 (getColor(pixel, &data->info->green, data->colormap->green) << 8) |
                 (getColor(pixel, &data->info->blue, data->colormap->blue) << 16);
                 // (getColor(pixel, &data->info->transp, data->colormap->transp) << 24);
-            memmove(&row[x * 3], &rgbaPixel.components, sizeof(rgbaPixel.components));
+            memmove(&row[x * 3], &pixel, sizeof(pixel));
         }
         row += row_step; // /(sizeof(typeof(row))/sizeof(uint8_t));
     }
+    return NULL;
+}
+void* processBmpGrayscaleRows(void *arg){
+    ThreadData *data = (ThreadData *)arg;
+
+    return NULL;
+}
+void* processBmpColoredRows(void *arg){
+    ThreadData *data = (ThreadData *)arg;
+
     return NULL;
 }
 
 static inline void dumpVideoMemory(const uint8_t *video_memory, const vsi *info, const struct fb_cmap *colormap, uint32_t line_length, FILE *fp, int use_multithreading, const char *format) {
     //const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
     const uint32_t row_step = //(format[1] == '6') ? info->xres * 3 :
-                        (format[1] == '6') ? info->xres * sizeof(RgbaPixel) :
+                        (format[1] == '6') ? info->xres * 3 :
                         (format[1] == '5') ? info->xres :
                         (format[1] == '4') ? (info->xres + 7) / 8 : 0;
     const uint32_t image_size = info->yres * row_step;
@@ -444,21 +406,38 @@ static inline void dumpVideoMemory(const uint8_t *video_memory, const vsi *info,
     free(buffer);
 }
 // BMP
-static inline void writeBmpHeader(FILE *fp, uint32_t image_size, uint32_t width, uint32_t height, uint16_t bit_count) {
-    BITMAPFILEHEADER file_header = {0x4D42, sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER) + image_size, 0, 0, sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER)};
-    BITMAPINFOHEADER info_header = {sizeof(BITMAPINFOHEADER), width, -height, 1, bit_count, 0, image_size, 0, 0, (bit_count == 8) ? 256 : 0, (bit_count == 8) ? 256 : 0};
+static inline void writeBmpHeader(uint32_t image_size, uint32_t width, uint32_t height, uint16_t bit_count, FILE *fp) {
+    //BITMAPFILEHEADER file_header = {0x4D42, sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER) + image_size, 0, 0, sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER)};
+    //BITMAPINFOHEADER info_header = {sizeof(BITMAPINFOHEADER), width, -height, 1, bit_count, 0, image_size, 0, 0, (bit_count == 8) ? 256 : 0, (bit_count == 8) ? 256 : 0};
 
-    fwrite(&file_header, sizeof(file_header), 1, fp);
-    fwrite(&info_header, sizeof(info_header), 1, fp);
+    // BMP file header
+    file_header.bfSize = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER) + image_size;
+
+    // BMP info header
+    info_header.biWidth = width;
+    info_header.biHeight = -height; // top-down BMP
+    info_header.biBitCount = bit_count;
+    info_header.biSizeImage = image_size;
+    info_header.biClrUsed = info_header.biClrImportant =
+        (bit_count == 8) ? 256 : 0; // only 256 color range important : all colors are important
+
+    if(fwrite(&file_header, sizeof(file_header), 1, fp) != 1){
+        posixError("write error");
+    }
+    if(fwrite(&info_header, sizeof(info_header), 1, fp) != 1){
+        posixError("write error");
+    }
 
     if (bit_count == 8) {
         for (uint32_t i = 0; i < 256; ++i) {
             uint8_t color[4] = {i, i, i, 0};
-            fwrite(color, sizeof(color), 1, fp);
+            if(fwrite(color, sizeof(color), 1, fp) != 1){
+                posixError("write error");
+            }
         }
     }
 }
-static inline void dumpVideoMemoryBmpGrayscale2(
+static inline void dumpVideoMemoryBmpGrayscale(
   const uint8_t *video_memory,
   const vsi *info,
   const cmap *colormap,
@@ -466,24 +445,27 @@ static inline void dumpVideoMemoryBmpGrayscale2(
   FILE *fp
 ) {
   const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
-
+  const uint32_t width = info->xres;
+  const uint32_t height = info->yres;
+  const uint32_t bit_count = 8;
   const uint32_t row_step = (info->xres + 3) & (~3);
   const uint32_t image_size = row_step * info->yres;
-  uint8_t * buffer = (uint8_t *)malloc(image_size);
-  if (buffer == NULL)
-        posixError("malloc failed");
-  assert(buffer != NULL);
-  uint8_t * const  buffer_start_addr = buffer;
+  uint8_t * row = (uint8_t *)malloc(image_size);
+  if (row == NULL){
+    posixError("malloc failed");
+  }
+  assert(row != NULL);
+  uint8_t * const  buffer_start_addr = row;
   // uint8_t *buffer_start_point = (uint8_t *)malloc(row_step);
 
+  /*
   // BMP file header
   file_header.bfSize = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER) + image_size;
 
   // BMP info header
-  info_header.biSize = sizeof(BITMAPINFOHEADER);
-  info_header.biWidth = info->xres;
-  info_header.biHeight = -info->yres; // top-down BMP
-  info_header.biBitCount = 8;
+  info_header.biWidth = width;
+  info_header.biHeight = -height; // top-down BMP
+  info_header.biBitCount = bit_count;
   info_header.biSizeImage = image_size;
   info_header.biClrUsed = info_header.biClrImportant = 256; // only 256 color range important
 
@@ -495,7 +477,11 @@ static inline void dumpVideoMemoryBmpGrayscale2(
     uint8_t color[4] = {i, i, i, 0};
     fwrite(color, sizeof(color), 1, fp);
   }
+  */
 
+  writeBmpHeader(image_size, width, height, bit_count, fp);
+
+  // processBmpGrayscaleRows
   for (uint32_t y = 0; y < info->yres; ++y) {
     const uint8_t *current = video_memory + (y + info->yoffset) * line_length +
                              info->xoffset * bytes_per_pixel;
@@ -513,43 +499,46 @@ static inline void dumpVideoMemoryBmpGrayscale2(
           break;
         default:
           for (uint32_t i = 0; i < bytes_per_pixel; ++i) {
-            pixel |= current[0] << (i * 8);
+            pixel |= *current << (i * sizeof(typeof(row)));
             ++current;
           }
           break;
       }
-      buffer[x] = getGrayscale(pixel, info, colormap);
+      row[x] = getGrayscale(pixel, info, colormap);
     }
-    buffer += row_step;
+    row += row_step;
   }
 
-  if (fwrite(buffer_start_addr, image_size, 1, fp) != 1)
+  if (fwrite(buffer_start_addr, image_size, 1, fp) != 1){
     posixError("write error");
+  }
 
   free(buffer_start_addr);
 }
 
-static inline void dumpVideoMemoryBmpColored2(
+static inline void dumpVideoMemoryBmpColored(
   const uint8_t *video_memory,
   const vsi *info,
   const cmap *colormap,
   const uint32_t line_length,
   FILE *fp
 ) {
-
+  (void)colormap;
   const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
   const uint32_t width = info->xres;
   const uint32_t height = info->yres;
-
+  const uint32_t bit_count = 24;
   const uint32_t row_step = (width * 3 + 3) & (~3); // 3 bytes per pixel (RGB)
   const uint32_t image_size = row_step * height;
-  uint8_t * buffer = (uint8_t *)malloc(image_size);
-  if (buffer == NULL)
+  uint8_t * row = (uint8_t *)malloc(image_size);
+  if (row == NULL){
     posixError("malloc failed");
-  assert(buffer != NULL);
-  uint8_t *buffer_start_addr = buffer;
+  }
+  assert(row != NULL);
+  uint8_t *buffer_start_addr = row;
   //uint8_t *buffer_start_point = (uint8_t *)malloc(row_step);
 
+  /*
   // BMP header header
   file_header.bfSize = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER) + image_size;
 
@@ -562,7 +551,11 @@ static inline void dumpVideoMemoryBmpColored2(
 
   fwrite(&file_header, sizeof(file_header), 1, fp);
   fwrite(&info_header, sizeof(info_header), 1, fp);
+  */
 
+  writeBmpHeader(image_size, width, height, bit_count, fp);
+
+  // processBmpRows
   for (uint32_t y = 0; y < height; ++y) {
     const uint8_t *current = video_memory + (y + info->yoffset) * line_length + info->xoffset * bytes_per_pixel;
     for (uint32_t x = 0; x < width; ++x) {
@@ -578,29 +571,36 @@ static inline void dumpVideoMemoryBmpColored2(
           break;
         default:
           for (unsigned int i = 0; i < bytes_per_pixel; ++i) {
-            pixel |= current[0] << (i * 8);
+            pixel |= *current << (i * 8);
             ++current;
           }
           break;
       }
 
-        buffer[x * 3 + 0] = getColor(pixel, &info->blue, colormap->blue);
-        buffer[x * 3 + 1] = getColor(pixel, &info->green, colormap->green);
-        buffer[x * 3 + 2] = getColor(pixel, &info->red, colormap->red);
+        /*
+        row[x * 3 + 0] = getColor(pixel, &info->blue, colormap->blue);
+        row[x * 3 + 1] = getColor(pixel, &info->green, colormap->green);
+        row[x * 3 + 2] = getColor(pixel, &info->red, colormap->red);
+        // row[x * 3 + 3] = getColor(pixel, &info->transp, colormap->transp);
+        */
 
       /*
-        uint8x8x3_t rgb={
-            getColor(pixel, &info->blue, colormap->blue),
-            getColor(pixel, &info->green, colormap->green),
-            getColor(pixel, &info->red, colormap->red)};
-        vst3_u8(buffer + x*3, rgb);
+        rgbPixel.components =
+          (getColor(pixel, &info->red, colormap->red) << 16) |
+          (getColor(pixel, &info->green, colormap->green) << 8) |
+          (getColor(pixel, &info->blue, colormap->blue) << 0);
+          // (getColor(pixel, &data->info->transp, data->colormap->transp) << 24);
+        memmove(&row[x * 3], &rgbPixel.components, sizeof(rgbPixel.components));
       */
+      memmove(&row[x * 3], &pixel, sizeof(pixel));
+      // row[x * 3] = pixel;
     }
-    buffer += row_step;
+    row += row_step;
   }
 
-  if (fwrite(buffer_start_addr, image_size, 1, fp) != 1)
+  if (fwrite(buffer_start_addr, image_size, 1, fp) != 1){
     posixError("write error");
+  }
 
   free(buffer_start_addr);
 }
@@ -851,9 +851,9 @@ int main(int argc, char **argv){
     fflush(ouput_file);
     if(flag_bitmap){
         if(flag_colored){
-            dumpVideoMemoryBmpColored2(video_memory, &var_info, &colormap, fix_info.line_length, ouput_file);
+            dumpVideoMemoryBmpColored(video_memory, &var_info, &colormap, fix_info.line_length, ouput_file);
         } else if(flag_gray){
-            dumpVideoMemoryBmpGrayscale2(video_memory, &var_info, &colormap, fix_info.line_length, ouput_file);
+            dumpVideoMemoryBmpGrayscale(video_memory, &var_info, &colormap, fix_info.line_length, ouput_file);
         }
     } else{
         //dumpVideoMemoryPpm(video_memory, &var_info, &colormap, fix_info.line_length, ouput_file, flag_thread);
