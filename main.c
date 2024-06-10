@@ -413,7 +413,7 @@ void* processBmpColoredRows(void *arg){
     const uint32_t width = data->info->xres;
     // const uint32_t height = data->info->yres;
     // const uint32_t image_size = height * data->row_step;
-    uint8_t *row = data->buffer + data->start_row * data->row_step;
+    const uint8_t *row = data->buffer + data->start_row * data->row_step;
 
     for (uint32_t y = data->start_row; y < data->start_row + data->num_rows; ++y) {
         const uint8_t *current = data->video_memory + (y + data->info->yoffset) * data->line_length + data->info->xoffset * bytes_per_pixel;
@@ -429,12 +429,17 @@ void* processBmpColoredRows(void *arg){
                 current += 2;
                 break;
             default:
-                for (unsigned int i = 0; i < bytes_per_pixel; ++i) {
+                for (uint32_t i = 0; i < bytes_per_pixel; ++i) {
                     pixel |= *current << (i * sizeof(typeof(row)));
                     ++current;
                 }
                 break;
             }
+            pixel =
+                (getColor(pixel, &data->info->red, data->colormap->red) << 0) |
+                (getColor(pixel, &data->info->blue, data->colormap->blue) << 8) |
+                (getColor(pixel, &data->info->green, data->colormap->green) << 16);
+            // (getColor(pixel, &data->info->transp, data->colormap->transp) << 24);
             memmove(&row[x * 3], &pixel, sizeof(pixel));
         }
         row += data->row_step;
