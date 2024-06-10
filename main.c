@@ -53,6 +53,7 @@ INTRO "\n" \
 "VERSION: " VERSION "\n" \
 "-h or --help <noarg> : print help \n" \
 "-v or --version <noarg> : print the version \n" \
+"-i or --info <noarg> : prints information about framebuffer device\n" \
 "-d or --device <arg> : framebuffer device. Default: " DefaultFbDev "\n" \
 "-o or --output <arg> : output file \n" \
 "-g or --gray <noarg> : grayscale color mode. P5, pgm file format. RGB channel order\n" \
@@ -65,9 +66,9 @@ INTRO "\n" \
 #define PBM "pbm"
 #define PGM "pgm"
 #define PPM "ppm"
-#define BMP "bmp"
-#define BMPC "bmpc"
-#define BMPg "bmpg"
+#define Bmp "bmp"
+#define Bmpc "bmpc"
+#define Bmpg "bmpg"
 
 // exit codes
 #define EXIT_POSIX_ERROR 2
@@ -77,10 +78,21 @@ INTRO "\n" \
 typedef struct fb_fix_screeninfo fsi;
 typedef struct fb_var_screeninfo vsi;
 typedef struct fb_cmap cmap;
-typedef struct ThreadData;
+typedef struct ThreadData ThreadData;
 typedef void* (*ProcessRows)(void*);
-typedef void (*ProcessRowCallback)(uint32_t y, struct ThreadData *data, uint8_t *row);
+typedef void (*ProcessRowCallback)(uint32_t y, ThreadData *data, uint8_t *row);
 static bool black_is_zero = false;
+
+typedef enum tagFileType{
+    // NetPbm
+    P4, // 0-1
+    P5, // 0-255 // grayscale
+    P6, // colored
+    // Bmp
+    BMP, // indicated BMPC
+    BMPG, // 0-255 // grayscale
+    BMPC // colored
+}FileType;
 
 // wingdi-bitmap structure document
 #pragma pack(push, 1)
@@ -150,6 +162,50 @@ static inline void notSupported(const char *s) {
 static inline void printHelp(){
     printf(HELPTEXT);
     exit(EXIT_HELP);
+}
+static inline void print_fix_info(struct fb_fix_screeninfo finfo) {
+    fprintf(stderr, "Fixed screen info:\n");
+    fprintf(stderr, "ID: %s\n", finfo.id);
+    fprintf(stderr, "Smem_start: 0x%lx\n", finfo.smem_start);
+    fprintf(stderr, "Smem_len: %d\n", finfo.smem_len);
+    fprintf(stderr, "Type: %d\n", finfo.type);
+    fprintf(stderr, "Type_aux: %d\n", finfo.type_aux);
+    fprintf(stderr, "Visual: %d\n", finfo.visual);
+    fprintf(stderr, "Xpanstep: %d\n", finfo.xpanstep);
+    fprintf(stderr, "Ypanstep: %d\n", finfo.ypanstep);
+    fprintf(stderr, "Ywrapstep: %d\n", finfo.ywrapstep);
+    fprintf(stderr, "Line_length: %d\n", finfo.line_length);
+    fprintf(stderr, "MMIO_start: 0x%lx\n", finfo.mmio_start);
+    fprintf(stderr, "MMIO_len: %d\n", finfo.mmio_len);
+    fprintf(stderr, "Accel: %d\n", finfo.accel);
+}
+static inline void print_var_info(struct fb_var_screeninfo vinfo) {
+    fprintf(stderr, "Variable screen info:\n");
+    fprintf(stderr, "Resolution: %dx%d\n", vinfo.xres, vinfo.yres);
+    fprintf(stderr, "Virtual Resolution: %dx%d\n", vinfo.xres_virtual, vinfo.yres_virtual);
+    fprintf(stderr, "Offset: %d,%d\n", vinfo.xoffset, vinfo.yoffset);
+    fprintf(stderr, "Bits per pixel: %d\n", vinfo.bits_per_pixel);
+    fprintf(stderr, "Red:    offset = %2d, length = %2d, msb_right = %2d\n", vinfo.red.offset, vinfo.red.length, vinfo.red.msb_right);
+    fprintf(stderr, "Green:  offset = %2d, length = %2d, msb_right = %2d\n", vinfo.green.offset, vinfo.green.length, vinfo.green.msb_right);
+    fprintf(stderr, "Blue:   offset = %2d, length = %2d, msb_right = %2d\n", vinfo.blue.offset, vinfo.blue.length, vinfo.blue.msb_right);
+    fprintf(stderr, "Transp: offset = %2d, length = %2d, msb_right = %2d\n", vinfo.transp.offset, vinfo.transp.length, vinfo.transp.msb_right);
+    fprintf(stderr, "Grayscale: %d\n", vinfo.grayscale);
+    fprintf(stderr, "Non-standard: %d\n", vinfo.nonstd);
+    fprintf(stderr, "Activate: %d\n", vinfo.activate);
+    fprintf(stderr, "Height: %d mm\n", vinfo.height);
+    fprintf(stderr, "Width: %d mm\n", vinfo.width);
+    fprintf(stderr, "Accel_flags: 0x%x\n", vinfo.accel_flags);
+    fprintf(stderr, "Pixclock: %d\n", vinfo.pixclock);
+    fprintf(stderr, "Left Margin: %d\n", vinfo.left_margin);
+    fprintf(stderr, "Right Margin: %d\n", vinfo.right_margin);
+    fprintf(stderr, "Upper Margin: %d\n", vinfo.upper_margin);
+    fprintf(stderr, "Lower Margin: %d\n", vinfo.lower_margin);
+    fprintf(stderr, "Hsync Length: %d\n", vinfo.hsync_len);
+    fprintf(stderr, "Vsync Length: %d\n", vinfo.vsync_len);
+    fprintf(stderr, "Sync: 0x%x\n", vinfo.sync);
+    fprintf(stderr, "Vmode: %d\n", vinfo.vmode);
+    fprintf(stderr, "Rotate: %d\n", vinfo.rotate);
+    fprintf(stderr, "Colorspace: %d\n", vinfo.colorspace);
 }
 static inline uint8_t getColor(uint32_t pixel, const struct fb_bitfield *bitfield,
                                uint16_t *colormap) {
@@ -414,9 +470,11 @@ void* processBmpColoredRows(void *arg){
     // const uint32_t height = data->info->yres;
     // const uint32_t image_size = height * data->row_step;
     const uint8_t *row = data->buffer + data->start_row * data->row_step;
+    const uint32_t xoffset = data->info->xoffset * bytes_per_pixel;
+    const uint32_t yoffset = data->info->yoffset * data->line_length;
 
     for (uint32_t y = data->start_row; y < data->start_row + data->num_rows; ++y) {
-        const uint8_t *current = data->video_memory + (y + data->info->yoffset) * data->line_length + data->info->xoffset * bytes_per_pixel;
+        const uint8_t *current = data->video_memory + (y + yoffset) * data->line_length + xoffset * bytes_per_pixel;
         for (uint32_t x = 0; x < width; ++x) {
             uint32_t pixel = 0;
             switch (bytes_per_pixel) {
@@ -435,12 +493,14 @@ void* processBmpColoredRows(void *arg){
                 }
                 break;
             }
+            /*
             pixel =
                 (getColor(pixel, &data->info->red, data->colormap->red) << 0) |
                 (getColor(pixel, &data->info->blue, data->colormap->blue) << 8) |
                 (getColor(pixel, &data->info->green, data->colormap->green) << 16);
+            */
             // (getColor(pixel, &data->info->transp, data->colormap->transp) << 24);
-            memmove(&row[x * 3], &pixel, sizeof(pixel));
+            memmove(&row[x * 3], &pixel, (sizeof(pixel)-1));
         }
         row += data->row_step;
     }
@@ -460,55 +520,70 @@ void* process(void *arg){
     return NULL;
 }
 
-static inline void dumpVideoMemory(const uint8_t *video_memory, const vsi *info, const cmap *colormap, uint32_t line_length, FILE *fp, int use_multithreading, const char *format) {
+static inline void dumpVideoMemory(const uint8_t *video_memory, const vsi *info, const cmap *colormap, uint32_t line_length, FILE *fp, int use_multithreading, const FileType imageFileFormat) {
     // P4, P5, P6, BMP, bmp, BMPC, bmpc, BMPG, bmpg
     const uint32_t bytes_per_pixel = (info->bits_per_pixel + 7) / 8;
     const uint32_t width = info->xres;
     const uint32_t height = info->yres;
     uint32_t row_step = 0;
     uint16_t bit_count = 24;
+    uint32_t image_size;
+    char* format = NULL;
     ProcessRows processRows;
-    ProcessRowCallback processRowCallback;
+    ProcessRowCallback processRowCallback = NULL;
 
+    switch(imageFileFormat){
     // NETPBM
-    if (!strcmp(format, "P4") || !strcmp(format, "p4")) {
+    case P4:
         // Bitmap
         row_step = (info->xres + 7) / 8;
         processRows = processPbmRows;
-    } else if (!strcmp(format, "P5") || !strcmp(format, "p5")) {
+        format = "P4";
+        fprintf(fp, "%s %" PRIu32 " %" PRIu32 " 255\n", format, info->xres, info->yres);
+        break;
+    case P5:
         // Grayscale
         row_step = info->xres;
         processRows = processPgmRows;
-    } else if (!strcmp(format, "P6") || !strcmp(format, "p6")) {
+        format = "P5";
+        fprintf(fp, "%s %" PRIu32 " %" PRIu32 " 255\n", format, info->xres, info->yres);
+        break;
+    case P6:
         // Colored
         row_step = info->xres * 3;
         processRows = processPpmRows;
-    }
+        format = "P6";
+        fprintf(fp, "%s %" PRIu32 " %" PRIu32 " 255\n", format, info->xres, info->yres);
+        break;
     // BMP
-    else if((strstr(format, "BMP") != NULL) || (strstr(format, "bmp") != NULL)){
-        if((strstr(format, "BMPC") != NULL) || (strstr(format, "bmpc") != NULL)){
-            // Colored
-            row_step = (width * 3 + 3) & (~3); // 3 bytes per pixel (RGB)
-            bit_count = 24;
-            processRows = processBmpColoredRows;
-            processRowCallback = processBmpColoredRow;
-        } else if (!strcmp(format, "BMPG") || !strcmp(format, "bmpg")) {
-            // Grayscale
-            row_step = (width + 3) & (~3);
-            bit_count = 8;
-            processRows = processBmpGrayscaleRows;
-        }
-        const uint32_t image_size = row_step * height;
+    case BMPG:
+        // Grayscale
+        row_step = (width + 3) & (~3);
+        bit_count = 8;
+        processRows = processBmpGrayscaleRows;
+        image_size = row_step * height;
         writeBmpHeader(image_size, width, height, bit_count, fp);
-    } else {
+        break;
+    case BMP:
+    case BMPC:
+        // Colored
+        row_step = (width * 3 + 3) & (~3); // 3 bytes per pixel (RGB)
+        bit_count = 24;
+        processRows = processBmpColoredRows;
+        processRowCallback = processBmpColoredRow;
+        image_size = row_step * height;
+        writeBmpHeader(image_size, width, height, bit_count, fp);
+        break;
+    default:
         // No one knows
         row_step = 0;
         processRows = NULL;
         processRowCallback = NULL;
         notSupported("File format not supported");
+        break;
     }
 
-    const uint32_t image_size = info->yres * row_step;
+    image_size = height * row_step;
     uint8_t *buffer = (uint8_t *)malloc(image_size);
     if (buffer == NULL) {
         posixError("malloc failed");
@@ -528,8 +603,6 @@ static inline void dumpVideoMemory(const uint8_t *video_memory, const vsi *info,
         // .num_rows = info->yres
     };
 
-    fprintf(fp, "%s %" PRIu32 " %" PRIu32 " 255\n", format, info->xres, info->yres);
-
     if (use_multithreading) {
         // Get the number of available processors at runtime
         uint32_t num_threads = sysconf(_SC_NPROCESSORS_ONLN);
@@ -537,8 +610,8 @@ static inline void dumpVideoMemory(const uint8_t *video_memory, const vsi *info,
 
         // Initialize the linked list for threads
         ThreadNode *head = NULL, *tail = NULL;
-        const uint32_t rows_per_thread = info->yres / num_threads;
-        const uint32_t remaining_rows = info->yres % num_threads;
+        const uint32_t rows_per_thread = height / num_threads;
+        const uint32_t remaining_rows = height % num_threads;
 
         for (uint32_t i = 0; i < num_threads; ++i) {
             ThreadNode *node = (ThreadNode *)malloc(sizeof(ThreadNode));
@@ -575,7 +648,7 @@ static inline void dumpVideoMemory(const uint8_t *video_memory, const vsi *info,
         }
     } else {
         // Prepare thread data for the entire image
-        data.num_rows = info->yres;
+        data.num_rows = height;
         data.start_row = 0;
 
         // Process all rows serially
@@ -616,18 +689,20 @@ int main(int argc, char **argv){
     /// get info from user // getopt_long
     int result_opt;
     int option_index = 0;
-    int flag_help = 0, flag_version = 0, flag_device = 0, flag_output = 0,
+    int flag_help = 0, flag_version = 0, flag_info = 0, flag_device = 0, flag_output = 0,
         flag_gray = 0, flag_colored = 0, flag_bitmap = 0,
         flag_thread = 0,
         flag_err = 0;
     char *output_file_name;
-    char *imageFileFormat = "BMPC";
+    //char *imageFileFormat = "BMPC";
+    FileType imageFileFormat;
 
     // Kısa ve Uzun seçenekleri tanımlama
-    static const char* short_options = "hvd:o:gcbt";
+    static const char* short_options = "hvid:o:gcbt";
     static const struct option long_options[] = {
         {"help", no_argument, 0, 'h'},
         {"version", no_argument, 0, 'v'},
+        {"info", no_argument, 0, 'i'},
         {"device", optional_argument, 0, 'd'},
         {"output", optional_argument, 0, 'o'},
         {"gray", no_argument, 0, 'g'},
@@ -645,6 +720,9 @@ int main(int argc, char **argv){
             break;
         case 'v':
             flag_version = 1;
+            break;
+        case 'i':
+            flag_info = 1;
             break;
         case 'd':
             flag_device = 1;
@@ -731,12 +809,6 @@ int main(int argc, char **argv){
     }
     if(flag_thread){
         fprintf(stderr,"Thread run mode mode is selected\n");
-        /*
-        if(flag_gray || !flag_colored){
-            fprintf(stderr, "thread run mode only supported only with P6, PPM file format for now!\n");
-            exit(EXIT_FAILURE);
-        }
-        */
     }
 
     // The remains threated as mistake.
@@ -748,14 +820,9 @@ int main(int argc, char **argv){
         exit(EXIT_FAILURE);
     }
     /// other checks
-    if (isatty(STDOUT_FILENO)) {
-        fprintf(stderr, "fbo: refusing to write binary data to a terminal\n");
-        flag_err = 1;
-    }
     if (ioctl(fd_device, FBIOGET_FSCREENINFO, &fix_info)){
         posixError("FBIOGET_FSCREENINFO failed");
     }
-
     if (fix_info.type != FB_TYPE_PACKED_PIXELS){
         notSupported("framebuffer type is not PACKED_PIXELS");
     }
@@ -763,10 +830,16 @@ int main(int argc, char **argv){
     if (ioctl(fd_device, FBIOGET_VSCREENINFO, &var_info)){
         posixError("FBIOGET_VSCREENINFO failed");
     }
-
     if (var_info.red.length > 8 || var_info.green.length > 8 ||
         var_info.blue.length > 8){
         notSupported("color depth > 8 bits per component");
+    }
+
+    if(flag_info){
+        print_fix_info(fix_info);
+        fprintf(stderr, "\n");
+        print_var_info(var_info);
+        exit(0);
     }
 
     // initColormap
@@ -774,11 +847,11 @@ int main(int argc, char **argv){
     case FB_VISUAL_TRUECOLOR: {
         /* initialize dummy colormap */
         uint32_t i;
-        for (i = 0; i < (1U << var_info.red.length); i++)
+        for (i = 0; i < (1U << var_info.red.length); ++i)
             colormap.red[i] = i * 0xFFFF / ((1 << var_info.red.length) - 1);
-        for (i = 0; i < (1U << var_info.green.length); i++)
+        for (i = 0; i < (1U << var_info.green.length); ++i)
             colormap.green[i] = i * 0xFFFF / ((1 << var_info.green.length) - 1);
-        for (i = 0; i < (1U << var_info.blue.length); i++)
+        for (i = 0; i < (1U << var_info.blue.length); ++i)
             colormap.blue[i] = i * 0xFFFF / ((1 << var_info.blue.length) - 1);
         break;
     }
@@ -836,10 +909,15 @@ int main(int argc, char **argv){
 
     fflush(ouput_file);
     if(flag_bitmap){
-        imageFileFormat = flag_colored ? "BMPC" : "BMPG";
+        // imageFileFormat = flag_colored ? "BMPC" : "BMPG";
+        imageFileFormat = flag_colored ? BMPC : BMPG;
     } else{
-        imageFileFormat = is_mono ? "P4" :
-                              flag_colored ? "P6" : "P5";
+        imageFileFormat = is_mono ? P4 :
+                          flag_colored ? P6 : P5;
+    }
+    if (isatty(STDOUT_FILENO)) {
+        fprintf(stderr, "fbo: refusing to write binary data to a terminal\n");
+        flag_err = 1;
     }
     dumpVideoMemory(video_memory, &var_info, &colormap, fix_info.line_length, ouput_file, flag_thread,
                     imageFileFormat);
